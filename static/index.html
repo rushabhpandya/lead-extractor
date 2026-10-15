@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>B2B Lead Extractor · India</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23D4AF37'/><path d='M8 22L13 10l5 8 3-5 3 7' stroke='%2309090B' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+</head>
+<body>
+  <div class="app-wrapper">
+
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M3 17l5-8 4 6 3-4 4 6H3z"/>
+          </svg>
+        </div>
+        <div>
+          <div class="logo-title">Lead Extractor</div>
+          <div class="logo-sub">B2B · India · Real-time</div>
+        </div>
+      </div>
+      <span class="header-badge">Production Build</span>
+    </header>
+
+    <!-- Search Panel -->
+    <section class="search-panel">
+      <div class="panel-label">Search Parameters</div>
+
+      <div class="controls-grid">
+
+        <!-- 1. Category -->
+        <div class="form-group">
+          <label class="form-label" for="input-category">Category</label>
+          <input
+            id="input-category"
+            class="form-input"
+            type="text"
+            placeholder="e.g. dentist, cafe, gym…"
+            autocomplete="off"
+          />
+          <div class="presets" id="category-presets">
+            <button class="preset-chip" data-target="input-category">Cafe</button>
+            <button class="preset-chip" data-target="input-category">Dentist</button>
+            <button class="preset-chip" data-target="input-category">Gym</button>
+            <button class="preset-chip" data-target="input-category">Restaurant</button>
+            <button class="preset-chip" data-target="input-category">Hospital</button>
+            <button class="preset-chip" data-target="input-category">Hotel</button>
+            <button class="preset-chip" data-target="input-category">Salon</button>
+            <button class="preset-chip" data-target="input-category">Pharmacy</button>
+            <button class="preset-chip" data-target="input-category">Bakery</button>
+          </div>
+        </div>
+
+        <!-- 2. Location -->
+        <div class="form-group">
+          <label class="form-label" for="input-location">Location <span style="color:var(--text-muted);font-size:10px;">(India only)</span></label>
+          <input
+            id="input-location"
+            class="form-input"
+            type="text"
+            placeholder="e.g. Mumbai, Delhi, Pune…"
+            autocomplete="off"
+          />
+          <div class="presets" id="location-presets">
+            <button class="preset-chip" data-target="input-location">Mumbai</button>
+            <button class="preset-chip" data-target="input-location">Delhi</button>
+            <button class="preset-chip" data-target="input-location">Bengaluru</button>
+            <button class="preset-chip" data-target="input-location">Hyderabad</button>
+            <button class="preset-chip" data-target="input-location">Pune</button>
+            <button class="preset-chip" data-target="input-location">Chennai</button>
+            <button class="preset-chip" data-target="input-location">Kolkata</button>
+            <button class="preset-chip" data-target="input-location">Ahmedabad</button>
+          </div>
+        </div>
+
+        <!-- 3. Volume -->
+        <div class="form-group">
+          <label class="form-label" for="input-volume">Volume</label>
+          <input
+            id="input-volume"
+            class="form-input"
+            type="number"
+            min="10"
+            max="500"
+            value="50"
+            placeholder="10–500"
+          />
+        </div>
+
+        <!-- 4. Rating -->
+        <div class="form-group">
+          <label class="form-label" for="input-star">Target Rating</label>
+          <div class="select-wrapper">
+            <select id="input-star" class="form-select form-input">
+              <option value="0">★ Any</option>
+              <option value="1">★ 1 Star</option>
+              <option value="2">★★ 2 Stars</option>
+              <option value="3">★★★ 3 Stars</option>
+              <option value="4">★★★★ 4 Stars</option>
+              <option value="5">★★★★★ 5 Stars</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 5. Rating Match Mode -->
+        <div class="form-group">
+          <label class="form-label">Rating Match Mode</label>
+          <div class="segmented" role="group" aria-label="Rating match mode">
+            <button class="seg-btn" data-mode="approx" id="mode-approx">Approx</button>
+            <button class="seg-btn active" data-mode="exact" id="mode-exact">Exact</button>
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:5px;line-height:1.4;" id="mode-hint">
+            Exact: round(rating) == star
+          </div>
+        </div>
+
+      </div><!-- /controls-grid -->
+
+      <!-- Actions Row -->
+      <div class="actions-row">
+        <div style="display:flex;gap:10px;align-items:center;">
+          <button class="btn-primary" id="btn-extract">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            </svg>
+            Extract Leads
+          </button>
+          <button class="btn-danger" id="btn-stop" style="display:none;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="4" y="4" width="16" height="16" rx="2"/>
+            </svg>
+            Stop
+          </button>
+        </div>
+        <div class="export-btns" id="export-btns" style="display:none;">
+          <button class="btn-secondary" id="btn-open-sheets" title="Copies clean leads and opens https://sheets.new">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+            </svg>
+            Open in Google Sheets
+          </button>
+          <button class="btn-secondary" id="btn-sheets-xlsx" title="Download Excel .xlsx ready for Google Sheets / Drive">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+            </svg>
+            Google Sheets (.xlsx)
+          </button>
+          <button class="btn-secondary" id="btn-copy-tsv">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+            Copy TSV
+          </button>
+          <button class="btn-secondary" id="btn-csv">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            CSV
+          </button>
+          <button class="btn-secondary" id="btn-excel">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+            </svg>
+            Excel
+          </button>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Status Bar -->
+    <div class="status-bar hidden" id="status-bar">
+      <div class="stat-item" id="stat-leads">
+        <span class="spinner" id="stat-spinner"></span>
+        <span class="stat-value" id="val-leads">0</span>
+        <span class="stat-label">Verified Leads</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value">100%</span>
+        <span class="stat-label">Phone Coverage</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="val-emails">0</span>
+        <span class="stat-label">Emails Found</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="val-elapsed">0.0s</span>
+        <span class="stat-label">Elapsed</span>
+      </div>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="progress-track" id="progress-track">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+
+    <!-- Results Section -->
+    <section class="results-section" id="results-section">
+      <div class="table-wrapper">
+        <div class="table-scroll">
+          <table id="leads-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th class="sortable" data-col="name">Business Name <span class="sort-arrow"></span></th>
+                <th class="sortable" data-col="address">Address <span class="sort-arrow"></span></th>
+                <th class="sortable" data-col="rating">Rating <span class="sort-arrow"></span></th>
+                <th>Phone Number</th>
+                <th class="sortable" data-col="email">Email <span class="sort-arrow"></span></th>
+                <th>Website</th>
+              </tr>
+            </thead>
+            <tbody id="leads-tbody">
+              <!-- Rows injected via JS -->
+            </tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="empty-state">
+          <div class="empty-state-icon">◈</div>
+          <div class="empty-state-title">No leads yet</div>
+          <div class="empty-state-sub">Configure parameters above and click Extract Leads.</div>
+        </div>
+      </div>
+    </section>
+
+  </div><!-- /app-wrapper -->
+
+  <!-- Toast notification -->
+  <div class="toast" id="toast"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
