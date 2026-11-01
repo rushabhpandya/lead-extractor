@@ -1,12 +1,16 @@
 /**
- * app.js — B2B Lead Extractor Frontend Logic
- * Vanilla JS: SSE streaming, sortable table, copy-to-clipboard, CSV/Excel export.
+ * app.js — AI Based Location Scraper Frontend Logic
+ * Clean Enterprise Interface
+ * Vanilla JS: SSE streaming, sortable table, copy-to-clipboard, CSV/Excel/Sheets export.
  * Zero external JS dependencies.
  */
 
 'use strict';
 
 // ─── State ────────────────────────────────────────────────────────────────────
+
+let activeRunId = 0;
+let activeEventSource = null;
 
 const state = {
   leads:      [],        // Array<Lead>
@@ -42,6 +46,34 @@ const valElapsed    = $('val-elapsed');
 const statSpinner   = $('stat-spinner');
 const modeHint      = $('mode-hint');
 const toast         = $('toast');
+const tableSearch   = $('table-search');
+const gridCounter   = $('grid-counter');
+
+// ─── Active Preset Chips Highlighting ─────────────────────────────────────────
+
+function updateChips() {
+  const cat = (inputCategory.value || '').trim();
+  const loc = (inputLocation.value || '').trim();
+
+  document.querySelectorAll('#category-presets .preset-chip').forEach(chip => {
+    if (chip.textContent.trim().toLowerCase() === cat.toLowerCase()) {
+      chip.classList.add('active-chip');
+    } else {
+      chip.classList.remove('active-chip');
+    }
+  });
+
+  document.querySelectorAll('#location-presets .preset-chip').forEach(chip => {
+    if (chip.textContent.trim().toLowerCase() === loc.toLowerCase()) {
+      chip.classList.add('active-chip');
+    } else {
+      chip.classList.remove('active-chip');
+    }
+  });
+}
+
+inputCategory.addEventListener('input', updateChips);
+inputLocation.addEventListener('input', updateChips);
 
 // ─── Rating mode segmented toggle ─────────────────────────────────────────────
 
@@ -85,9 +117,45 @@ document.querySelectorAll('.preset-chip').forEach(chip => {
     if (targetInput) {
       targetInput.value = chip.textContent.trim();
       targetInput.focus();
+      updateChips();
     }
   });
 });
+
+// ─── Demo Pills ────────────────────────────────────────────────────────────────
+
+document.querySelectorAll('.demo-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    inputCategory.value = pill.dataset.cat;
+    inputLocation.value = pill.dataset.loc;
+    inputVolume.value   = pill.dataset.vol;
+    updateChips();
+    startExtraction();
+  });
+});
+
+// Initial chip sync
+updateChips();
+
+// ─── Live Table Search ─────────────────────────────────────────────────────────
+
+if (tableSearch) {
+  tableSearch.addEventListener('input', () => {
+    const query = tableSearch.value.trim().toLowerCase();
+    const rows = leadsBody.querySelectorAll('tr');
+    let visibleCount = 0;
+    rows.forEach(row => {
+      const match = !query || row.textContent.toLowerCase().includes(query);
+      row.style.display = match ? '' : 'none';
+      if (match) visibleCount++;
+    });
+    if (gridCounter) {
+      gridCounter.textContent = query
+        ? `${visibleCount} of ${state.leads.length} matching`
+        : `${state.leads.length} loaded`;
+    }
+  });
+}
 
 // ─── Extract ────────────────────────────────────────────────────────────────────
 
@@ -101,13 +169,25 @@ function generateReqId() {
 function startExtraction() {
   const category = inputCategory.value.trim();
   const location = inputLocation.value.trim();
-  const volume   = Math.min(500, Math.max(10, parseInt(inputVolume.value, 10) || 50));
+  const volume   = Math.min(200, Math.max(10, parseInt(inputVolume.value, 10) || 50));
   const star     = parseInt(inputStar.value, 10);
 
   if (!category) { showToast('Please enter a category.'); inputCategory.focus(); return; }
   if (!location) { showToast('Please enter a location.');  inputLocation.focus(); return; }
 
-  // Reset UI
+  updateChips();
+
+  // Increment run ID and lock locally to prevent interleaved streams
+  activeRunId++;
+  const myRunId = activeRunId;
+
+  // Immediately abort/close previous active stream
+  if (activeEventSource) {
+    try { activeEventSource.close(); } catch (_) {}
+    activeEventSource = null;
+  }
+
+  // Reset UI and state
   state.leads     = [];
   state.streaming = true;
   state.reqId     = generateReqId();
@@ -119,11 +199,13 @@ function startExtraction() {
   statusBar.classList.remove('hidden');
   progressTrack.classList.add('visible');
   progressFill.style.width = '0%';
-  exportBtns.style.display = 'none';
   valLeads.textContent   = '0';
   valEmails.textContent  = '0';
   valElapsed.textContent = '0.0s';
   statSpinner.style.display = '';
+
+  if (gridCounter) gridCounter.textContent = 'Extracting...';
+  if (tableSearch) tableSearch.value = '';
 
   btnExtract.disabled = true;
   btnStop.style.display = '';
@@ -131,7 +213,7 @@ function startExtraction() {
   // Elapsed timer
   clearInterval(state.elapsedTmr);
   state.elapsedTmr = setInterval(() => {
-    if (!state.streaming) { clearInterval(state.elapsedTmr); return; }
+    if (!state.streaming || myRunId !== activeRunId) { clearInterval(state.elapsedTmr); return; }
     valElapsed.textContent = ((Date.now() - state.startTime) / 1000).toFixed(1) + 's';
   }, 200);
 
@@ -147,23 +229,31 @@ function startExtraction() {
   const url = `/api/extract?${params.toString()}`;
 
   const es = new EventSource(url);
+  activeEventSource = es;
 
   es.onmessage = (event) => {
+    if (myRunId !== activeRunId) {
+      try { es.close(); } catch (_) {}
+      return;
+    }
     try {
       const msg = JSON.parse(event.data);
-      handleMessage(msg, volume, es);
+      handleMessage(msg, volume, es, myRunId);
     } catch (e) {
       console.error('SSE parse error', e);
     }
   };
 
   es.onerror = (err) => {
+    if (myRunId !== activeRunId) return;
     console.error('SSE error', err);
     finishStream(es);
   };
 }
 
-function handleMessage(msg, volume, es) {
+function handleMessage(msg, volume, es, myRunId) {
+  if (myRunId !== activeRunId) return;
+
   if (msg.type === 'lead') {
     const lead = msg.data;
     state.leads.push(lead);
@@ -172,6 +262,10 @@ function handleMessage(msg, volume, es) {
     const emailCount = state.leads.filter(l => l.email && l.email.length > 0).length;
     valLeads.textContent  = state.leads.length;
     valEmails.textContent = emailCount;
+
+    if (gridCounter) {
+      gridCounter.textContent = `${state.leads.length} loaded`;
+    }
 
     // Progress
     const pct = Math.min(100, Math.round((state.leads.length / volume) * 100));
@@ -190,6 +284,7 @@ function handleMessage(msg, volume, es) {
 
 function finishStream(es) {
   if (es) { try { es.close(); } catch (_) {} }
+  if (activeEventSource === es) { activeEventSource = null; }
   state.streaming = false;
   clearInterval(state.elapsedTmr);
 
@@ -199,15 +294,22 @@ function finishStream(es) {
   progressFill.style.width = '100%';
 
   if (state.leads.length > 0) {
-    exportBtns.style.display = '';
+    if (emptyState) emptyState.style.display = 'none';
+    if (gridCounter) gridCounter.textContent = `${state.leads.length} loaded`;
   } else {
-    emptyState.style.display = '';
+    if (emptyState) emptyState.style.display = '';
+    if (gridCounter) gridCounter.textContent = `0 loaded`;
   }
 
   showToast(`Extraction complete · ${state.leads.length} verified leads`);
 }
 
 async function stopExtraction() {
+  activeRunId++; // invalidate any active stream callbacks immediately
+  if (activeEventSource) {
+    try { activeEventSource.close(); } catch (_) {}
+    activeEventSource = null;
+  }
   if (state.reqId) {
     try {
       await fetch(`/api/stop/${state.reqId}`, { method: 'POST' });
@@ -220,46 +322,89 @@ async function stopExtraction() {
 // ─── Table rendering ──────────────────────────────────────────────────────────
 
 function appendRow(lead) {
+  const cleanName = (lead.name || '').replace(/\s*\(Branch\s*\d+\)/gi, '');
+  const rowNum = leadsBody.rows.length + 1;
   const tr = document.createElement('tr');
-  tr.dataset.name    = (lead.name    || '').toLowerCase();
+  tr.dataset.name    = cleanName.toLowerCase();
   tr.dataset.address = (lead.address || '').toLowerCase();
   tr.dataset.rating  = lead.rating != null ? lead.rating : '';
   tr.dataset.email   = (lead.email   || '').toLowerCase();
 
-  const ratingHTML = lead.rating != null
-    ? `<span class="star-icon">★</span><span class="rating-val">${parseFloat(lead.rating).toFixed(1)}</span>`
+  // Monogram initials (2 letters)
+  const words = cleanName.trim().split(/\s+/).filter(Boolean);
+  let initials = 'BZ';
+  if (words.length >= 2) {
+    initials = (words[0][0] + words[1][0]).toUpperCase();
+  } else if (words.length === 1 && words[0].length >= 2) {
+    initials = words[0].slice(0, 2).toUpperCase();
+  }
+
+  const ratingVal = lead.rating != null ? parseFloat(lead.rating) : null;
+  const ratingPct = ratingVal != null ? Math.min(100, Math.round((ratingVal / 5.0) * 100)) : 0;
+
+  const ratingHTML = ratingVal != null
+    ? `<div class="rating-cell-wrap">
+         <div class="rating-pill">
+           <span class="star-icon">★</span>
+           <span class="rating-val">${ratingVal.toFixed(1)}</span>
+         </div>
+         <div class="rating-mini-bar" title="${ratingVal.toFixed(1)} / 5.0">
+           <div class="rating-mini-fill" style="width: ${ratingPct}%"></div>
+         </div>
+       </div>`
     : `<span class="rating-empty">—</span>`;
 
   const emailHTML = lead.email
-    ? `<a href="mailto:${esc(lead.email)}" style="color:var(--text-muted)">${esc(lead.email)}</a>`
-    : '—';
+    ? `<div class="email-wrap">
+         <svg class="email-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+           <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+           <polyline points="22,6 12,13 2,6"/>
+         </svg>
+         <a class="email-link" href="mailto:${esc(lead.email)}" title="${esc(lead.email)}">${esc(lead.email)}</a>
+       </div>`
+    : '<span class="empty-field">—</span>';
 
   const websiteHTML = lead.website
-    ? `<a class="website-link" href="${esc(lead.website)}" target="_blank" rel="noopener"
-         title="${esc(lead.website)}">
-         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    ? `<a class="website-link" href="${esc(lead.website)}" target="_blank" rel="noopener" title="${esc(lead.website)}">
+         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
            <polyline points="15 3 21 3 21 9"/>
            <line x1="10" y1="14" x2="21" y2="3"/>
          </svg>
        </a>`
-    : '—';
+    : '<span class="empty-field">—</span>';
 
   tr.innerHTML = `
-    <td class="col-index">${lead.index}</td>
-    <td class="col-name">${esc(lead.name)}</td>
-    <td class="col-address" title="${esc(lead.address)}">${esc(lead.address) || '—'}</td>
+    <td class="col-index">${rowNum}</td>
+    <td class="col-name">
+      <div class="lead-biz-wrap">
+        <div class="biz-avatar">${esc(initials)}</div>
+        <div class="biz-info">
+          <div class="biz-title">
+            <span>${esc(cleanName)}</span>
+            <span class="verified-badge" title="Verified Phone">✓</span>
+          </div>
+        </div>
+      </div>
+    </td>
+    <td class="col-address" title="${esc(lead.address)}">
+      <div class="address-wrap">
+        <span class="loc-pin">📍</span>
+        <span class="address-text">${esc(lead.address) || '—'}</span>
+      </div>
+    </td>
     <td class="col-rating">${ratingHTML}</td>
     <td class="col-phone">
-      <span class="phone-val">${esc(lead.phone)}</span>
-      <button class="phone-copy-btn" title="Copy number" data-phone="${esc(lead.phone)}">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="9" y="9" width="13" height="13" rx="2"/>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-        </svg>
-      </button>
+      <div class="phone-wrap">
+        <span class="phone-badge">+91</span>
+        <span class="phone-val">${esc(lead.phone)}</span>
+        <button class="phone-copy-btn" title="Copy number" data-phone="${esc(lead.phone)}">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+      </div>
     </td>
     <td class="col-email">${emailHTML}</td>
     <td class="col-website">${websiteHTML}</td>
@@ -337,9 +482,10 @@ function leadsToTSV(textSafePhones = false) {
     if (textSafePhones && phoneVal.startsWith('+')) {
       phoneVal = "'" + phoneVal;
     }
+    const cleanName = (l.name || '').replace(/\s*\(Branch\s*\d+\)/gi, '');
     return [
       i + 1,
-      l.name    || '',
+      cleanName,
       l.address || '',
       l.rating  != null ? parseFloat(l.rating).toFixed(1) : '',
       phoneVal,
@@ -353,22 +499,25 @@ function leadsToTSV(textSafePhones = false) {
 function leadsToCSV() {
   const headers = ['#', 'Business Name', 'Address', 'Rating', 'Phone Number', 'Email', 'Website'];
   const csvEsc = v => `"${String(v).replace(/"/g, '""')}"`;
-  const rows = state.leads.map((l, i) => [
-    i + 1,
-    l.name    || '',
-    l.address || '',
-    l.rating  != null ? parseFloat(l.rating).toFixed(1) : '',
-    l.phone   || '',
-    l.email   || '',
-    l.website || '',
-  ]);
+  const rows = state.leads.map((l, i) => {
+    const cleanName = (l.name || '').replace(/\s*\(Branch\s*\d+\)/gi, '');
+    return [
+      i + 1,
+      cleanName,
+      l.address || '',
+      l.rating  != null ? parseFloat(l.rating).toFixed(1) : '',
+      l.phone   || '',
+      l.email   || '',
+      l.website || '',
+    ];
+  });
   return '\uFEFF' + [headers, ...rows].map(r => r.map(csvEsc).join(',')).join('\r\n');
 }
 
 // 1. Open in Google Sheets
 $('btn-open-sheets')?.addEventListener('click', () => {
   if (!state.leads.length) {
-    showToast('No leads to open');
+    showToast('No leads to open — run an extraction first');
     return;
   }
   const tsv = leadsToTSV(true);
@@ -380,7 +529,7 @@ $('btn-open-sheets')?.addEventListener('click', () => {
 // 2. Download Google Sheets (.xlsx)
 $('btn-sheets-xlsx')?.addEventListener('click', async () => {
   if (!state.leads.length) {
-    showToast('No leads to export');
+    showToast('No leads to export — run an extraction first');
     return;
   }
   try {
@@ -398,7 +547,7 @@ $('btn-sheets-xlsx')?.addEventListener('click', async () => {
     a.download = 'leads_export.xlsx';
     a.click();
     URL.revokeObjectURL(url);
-    showToast('Downloaded leads_export.xlsx (Ready for Google Sheets)');
+    showToast('Downloaded leads_export.xlsx');
   } catch (err) {
     console.error('Export error', err);
     showToast('Failed to export .xlsx');
@@ -407,18 +556,30 @@ $('btn-sheets-xlsx')?.addEventListener('click', async () => {
 
 // 3. Copy TSV
 $('btn-copy-tsv')?.addEventListener('click', () => {
+  if (!state.leads.length) {
+    showToast('No leads to copy — run an extraction first');
+    return;
+  }
   copyText(leadsToTSV(false));
   showToast('TSV copied — paste directly into Google Sheets');
 });
 
 // 4. Download CSV
 $('btn-csv')?.addEventListener('click', () => {
+  if (!state.leads.length) {
+    showToast('No leads to export — run an extraction first');
+    return;
+  }
   downloadFile(leadsToCSV(), 'leads.csv', 'text/csv;charset=utf-8;');
   showToast('CSV downloaded');
 });
 
 // 5. Download Excel (.csv with UTF-8 BOM)
 $('btn-excel')?.addEventListener('click', () => {
+  if (!state.leads.length) {
+    showToast('No leads to export — run an extraction first');
+    return;
+  }
   downloadFile(leadsToCSV(), 'leads_excel.csv', 'text/csv;charset=utf-8;');
   showToast('Excel-compatible CSV downloaded');
 });
