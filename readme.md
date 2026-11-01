@@ -1,4 +1,4 @@
-# Lead Extractor — Real-Time Asynchronous B2B Contact Discovery Engine
+AI BASED LOCATION SCRAPER — Real-Time Asynchronous B2B Contact Discovery Engine
 
 > A high-throughput, asynchronous B2B contact and star-rating discovery platform tailored for Indian local commercial ecosystems. Discovers, validates, and enriches SMB leads in real time without third-party aggregator dependencies.
 
