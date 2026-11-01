@@ -22,6 +22,6 @@ AI BASED LOCATION SCRAPER — Real-Time Asynchronous B2B Contact Discovery Engin
 
 ### 1. Clone & Install
 ```bash
-git clone [https://github.com/YOUR_USERNAME/lead-extractor.git](https://github.com/YOUR_USERNAME/lead-extractor.git)
+git clone [https://github.com/rushabhpandya/lead-extractor.git](https://github.com/rushabhpandya/lead-extractor.git)
 cd lead-extractor
 pip install -r requirements.txt
