@@ -14,7 +14,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 import openpyxl
@@ -240,9 +240,28 @@ async def api_export_sheets(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Static files (frontend)
+# Static files & frontend routes
 # ---------------------------------------------------------------------------
-STATIC_DIR = Path(__file__).parent / "static"
-STATIC_DIR.mkdir(exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+INDEX_FILE = STATIC_DIR / "index.html"
 
-app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+# Ensure static assets are properly mounted under /static
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Explicit root handler serving index.html
+@app.get("/", include_in_schema=False)
+async def serve_root():
+    if INDEX_FILE.is_file():
+        return FileResponse(str(INDEX_FILE))
+    return {"detail": f"Frontend index.html not found at {INDEX_FILE}"}
+
+# Fallback for top-level root asset requests (e.g. /styles.css, /app.js)
+@app.get("/{filename:path}", include_in_schema=False)
+async def serve_static_root(filename: str):
+    file_path = STATIC_DIR / filename
+    if file_path.is_file():
+        return FileResponse(str(file_path))
+    return {"detail": "Not Found"}
+

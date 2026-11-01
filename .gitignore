@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+*.tmp
+test_*.py
+.venv/
+env/
+.vscode/
+.idea/
+*.zip
+*.pptx
