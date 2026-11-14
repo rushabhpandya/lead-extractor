@@ -1,10 +1,11 @@
 """
-services/scraper_engine.py — Universal 3-Stage Global B2B Lead Extractor Engine.
-Stage 1: Normalized & Fuzzy Cache Lookup (Instant sub-second streaming)
-Stage 2: Live Multi-Engine Discovery (OSM Overpass + DuckDuckGo with fast timeout)
-Stage 3: Universal Dynamic Lead Expansion (Guarantees 100% of requested volume 10–1,000
-         for ANY category & ANY city on Earth with verified E.164 phones, real streets,
-         valid Instagram handles, and precise rating matching).
+services/scraper_engine.py — 100% Genuine Live Global B2B Lead Extractor Engine.
+Zero synthetic records. Zero fake phone generators. Zero hallucinated emails or addresses.
+
+Architecture:
+  Stage 1: Verified Lead Cache Lookup (sub-second streaming of previously verified live leads)
+  Stage 2: Live Multi-Query Web Discovery (Yahoo Search engine with unthrottled pagination)
+  Stage 3: Deep Asynchronous Website Crawling (brand name, E.164 phone, real email, real Instagram)
 """
 
 from __future__ import annotations
@@ -12,15 +13,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import random
 import re
 import time
 from pathlib import Path
-from typing import AsyncIterator, Optional, List, Dict, Any, Tuple
+from typing import AsyncIterator, Optional, List, Dict, Any, Set, Tuple
+from urllib.parse import urlparse, unquote
+
+import httpx
+from bs4 import BeautifulSoup
+import phonenumbers
 
 from services.geocoder import (
     resolve_any_global_location,
-    generate_valid_phone,
     parse_multi_city,
 )
 from services.enrichment import (
@@ -38,7 +42,37 @@ _cache_data: Dict[str, List[dict]] = {}
 _cache_loaded: bool = False
 
 # ---------------------------------------------------------------------------
-# Cache Management & Normalized Lookup
+# Directories and Aggregators to Filter Out
+# ---------------------------------------------------------------------------
+DIRECTORY_DOMAINS: Set[str] = {
+    "yelp.com", "angi.com", "thumbtack.com", "houzz.com", "homeadvisor.com",
+    "yellowpages.com", "superpages.com", "bbb.org", "tripadvisor.com",
+    "tripadvisor.co.uk", "wikipedia.org", "wikimedia.org", "wikidata.org",
+    "facebook.com", "instagram.com", "linkedin.com", "pinterest.com",
+    "twitter.com", "x.com", "tiktok.com", "youtube.com", "reddit.com",
+    "quora.com", "mapquest.com", "crunchbase.com", "zoominfo.com", "dnb.com",
+    "bloomberg.com", "amazon.com", "ebay.com", "justdial.com", "sulekha.com",
+    "nobroker.in", "urbancompany.com", "indiamart.com", "tradeindia.com",
+    "apple.com", "google.com", "microsoft.com", "yahoo.com", "bing.com",
+    "duckduckgo.com", "zhihu.com", "medium.com", "forbes.com", "nytimes.com",
+    "theguardian.com", "bbc.com", "cnn.com", "standard.co.uk", "timeout.com",
+    "explorelondon.co.uk", "sothebysrealty.co.uk", "antiques-atlas.com",
+    "mountstreetneighbourhood.com", "mayfair-london.co.uk", "taskrabbit.com",
+    "checkatrade.com", "mybuilder.com", "trustatrader.com", "gumtree.com",
+    "craigslist.org", "porch.com", "nextdoor.com", "buildzoom.com",
+}
+
+# Generic Junk Substrings in URLs or Titles
+JUNK_PATTERNS = re.compile(
+    r'(?i)\b('
+    r'best\s*\d+|top\s*\d+|list\s+of|how\s+to|what\s+is|meaning\s+of|'
+    r'download|apk|login|signin|sign\s+up|pricing|jobs|careers|'
+    r'wikipedia|quora|reddit|youtube|guide\s+to|complete\s+guide'
+    r')\b'
+)
+
+# ---------------------------------------------------------------------------
+# Cache Management
 # ---------------------------------------------------------------------------
 
 def _load_cache() -> None:
@@ -49,6 +83,8 @@ def _load_cache() -> None:
         if CACHE_FILE.is_file():
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 _cache_data = json.load(f)
+        else:
+            _cache_data = {}
     except Exception as exc:
         logger.warning("Cache load failed: %s", exc)
         _cache_data = {}
@@ -68,43 +104,6 @@ def get_cached_leads_for_city(category: str, city: str) -> List[dict]:
         f"{cat_lower}|{city_lower.replace(' ', '')}",
     ]
 
-    # Category-specific alias matching
-    if any(k in cat_lower for k in ["antique", "vintage furniture"]):
-        keys_to_try.extend([
-            f"antique showroom|{city_lower}",
-            f"antique showroom|{city_base}",
-            f"vintage furniture|{city_lower}",
-            f"vintage furniture|{city_base}",
-        ])
-    elif any(k in cat_lower for k in ["interior", "decor"]):
-        keys_to_try.extend([
-            f"interior design|{city_lower}",
-            f"interior design|{city_base}",
-        ])
-    elif any(k in cat_lower for k in ["art", "gallery", "collector"]):
-        keys_to_try.extend([
-            f"art gallery|{city_lower}",
-            f"art gallery|{city_base}",
-        ])
-    elif any(k in cat_lower for k in ["gym", "fitness", "crossfit", "workout"]):
-        keys_to_try.append(f"gym|{city_base}")
-    elif any(k in cat_lower for k in ["cafe", "coffee"]):
-        keys_to_try.append(f"cafe|{city_base}")
-    elif any(k in cat_lower for k in ["dentist", "dental"]):
-        keys_to_try.append(f"dentist|{city_base}")
-    elif any(k in cat_lower for k in ["restaurant", "dining"]):
-        keys_to_try.append(f"restaurant|{city_base}")
-    elif any(k in cat_lower for k in ["hospital", "clinic", "health"]):
-        keys_to_try.append(f"hospital|{city_base}")
-    elif any(k in cat_lower for k in ["hotel", "resort"]):
-        keys_to_try.append(f"hotel|{city_base}")
-    elif any(k in cat_lower for k in ["salon", "spa"]):
-        keys_to_try.append(f"salon|{city_base}")
-    elif any(k in cat_lower for k in ["pharmacy", "chemist"]):
-        keys_to_try.append(f"pharmacy|{city_base}")
-    elif any(k in cat_lower for k in ["bakery", "bake", "cake"]):
-        keys_to_try.append(f"bakery|{city_base}")
-
     for k in keys_to_try:
         if k in _cache_data and len(_cache_data[k]) > 0:
             return list(_cache_data[k])
@@ -113,16 +112,20 @@ def get_cached_leads_for_city(category: str, city: str) -> List[dict]:
 
 
 def save_to_cache(category: str, city: str, new_leads: List[dict]) -> None:
-    """Persist newly found or generated leads to cache, deduplicated by phone/name."""
+    """Persist newly found verified leads to cache, deduplicated by phone/name/website."""
     global _cache_data
     _load_cache()
     key = f"{category.lower().strip()}|{city.lower().strip()}"
     existing = _cache_data.get(key, [])
-    seen = {l.get("phone_e164") or l.get("phone") or l.get("name") for l in existing}
+    seen = {
+        l.get("phone_e164") or l.get("website") or l.get("name")
+        for l in existing
+        if l.get("phone_e164") or l.get("website") or l.get("name")
+    }
 
     merged = list(existing)
     for l in new_leads:
-        ident = l.get("phone_e164") or l.get("phone") or l.get("name")
+        ident = l.get("phone_e164") or l.get("website") or l.get("name")
         if ident and ident not in seen:
             seen.add(ident)
             merged.append(l)
@@ -170,183 +173,323 @@ def filter_by_rating(leads: List[dict], star: int, mode: str, limit: int) -> Lis
 
 
 # ---------------------------------------------------------------------------
-# Stage 3: Universal Dynamic Lead Expansion
+# Business Name & Result Cleaning
 # ---------------------------------------------------------------------------
 
-SURNAMES = [
-    "Vanguard", "Kensington", "Sterling", "Montague", "Parrish", "Belvedere",
-    "Somerset", "Davenport", "Fontaine", "Laurent", "Castiglione", "Mercer",
-    "Sinclair", "Hawthorne", "Beaumont", "Valmont", "Hastings", "Cavendish",
-    "St. Clair", "Marceau", "Vanderbilt", "Ashford", "Duval", "Grosvenor",
-    "Pembroke", "Winslow", "Delacroix", "Trevelyan", "Livingston", "Rothschild",
-    "Aurelius", "Harcourt", "Bellingham", "Moreau", "St. James", "Winterbourne",
-    "Barrington", "Waverly", "Preston", "Chamberlain", "Ellington", "Wellington",
-    "Whitmore", "Stratford", "Kaufmann", "Goldstein", "Almeida", "Marciano"
-]
+def clean_business_name(raw: str) -> str:
+    """Clean page title to extract true business name."""
+    if not raw:
+        return ""
+    name = raw.strip()
 
-PREFIXES = [
-    "Atelier", "Galerie", "Studio", "Maison", "The", "Bespoke", "Heritage",
-    "Signature", "Vanguard", "Premier", "Grand", "Noble", "Elysian", "Sovereign",
-    "Curated", "Prime", "Lumière", "Apex"
-]
+    name = re.sub(
+        r'^(?:Contact(?:\s+Us)?|Get\s+In\s+Touch(?:\s+With\s+Us)?|About\s+Us|Welcome\s+to|Home)\s*[-|–—:\s]\s*',
+        '', name, flags=re.I
+    )
+    name = re.sub(r'\s*\|\s*.*$', '', name)
+    name = re.sub(r'\s*[-|–—:]\s*(?:Home|Official\s+Website|Reviews|Ratings|Services|About).*$', '', name, flags=re.I)
+    name = re.sub(r'\s*[-|–—:]\s*(?:Top|Best|Leading|Directory|Yelp|Tripadvisor).*$', '', name, flags=re.I)
+    name = re.sub(r'\s*\(Updated \d{4}\)', '', name, flags=re.I)
+    name = name.strip()
 
+    parts = re.split(r'[-–—|]', name)
+    if len(parts) > 1 and len(parts[0].strip()) >= 3:
+        first = parts[0].strip()
+        if not re.search(r'\b(best|top|find|hire|reviews|near|guide)\b', first, re.I):
+            name = first
 
-def _get_category_suffixes(category: str) -> List[str]:
-    c = category.lower()
-    if any(k in c for k in ["collector", "art", "gallery", "curator"]):
-        return [
-            "Private Art Advisory", "Fine Art", "Collectors Studio", "Art Advisory",
-            "Curators", "Archive", "Art Vault", "Gallery & Salons", "Cabinet d'Art",
-            "Masterworks", "Contemporary Art Advisory", "Rare Collection"
-        ]
-    elif any(k in c for k in ["watch", "horolog", "timepiece"]):
-        return [
-            "Horlogerie", "Timepieces", "Rare Watches", "Chronometry", "Watchmakers",
-            "Private Vault", "Haute Horlogerie", "Horological Salons", "Watch Vault"
-        ]
-    elif any(k in c for k in ["jewelry", "jeweller", "gem", "diamond"]):
-        return [
-            "Haute Joaillerie", "Jewellers", "Rare Jewels", "Diamond Atelier",
-            "Private Salons", "Gems & Vault", "Fine Jewellery"
-        ]
-    elif any(k in c for k in ["architect", "architecture"]):
-        return [
-            "Architects", "Architectural Lab", "Atelier d'Architecture", "Architecture Studio",
-            "Spatial Design", "Architectural Group", "Design & Architecture", "Architecture Practice"
-        ]
-    elif any(k in c for k in ["interior", "decor", "furniture", "antique"]):
-        return [
-            "Interiors", "Design Studio", "Interior Architecture", "Atelier",
-            "Decorative Arts", "Showroom & Studios", "Interior Collective", "Living Atelier"
-        ]
-    elif any(k in c for k in ["law", "legal", "attorney"]):
-        return [
-            "Chambers", "Law Practice", "Legal Advisory", "Partners & Associates",
-            "Counsel", "Legal Group", "Barristers & Solicitors"
-        ]
-    elif any(k in c for k in ["car", "automotive", "motor"]):
-        return [
-            "Automotive Collection", "Motors", "Prestige Automobiles", "Vault",
-            "Supercar Gallery", "Motorworks", "Bespoke Motors"
-        ]
-    else:
-        title_cat = category.strip().title()
-        return [
-            f"{title_cat} Studio", f"{title_cat} Advisory", f"{title_cat} Partners",
-            f"{title_cat} Collective", f"{title_cat} Group", f"{title_cat} Atelier",
-            f"{title_cat} Associates", f"{title_cat} Practice", f"{title_cat} Lab"
-        ]
+    return name.strip()
 
 
-def generate_authentic_leads(
+def decode_yahoo_url(url: str) -> str:
+    """Extract destination URL from Yahoo redirect."""
+    m = re.search(r'/RU=([^/&]+)', url)
+    if m:
+        try:
+            d = unquote(m.group(1))
+            if d.startswith("http"):
+                return d
+        except Exception:
+            pass
+    return url
+
+
+def is_directory_or_junk(url: str, title: str) -> bool:
+    """Detect whether a search result is an aggregator, directory, or junk page."""
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower().replace("www.", "")
+
+    if any(d in domain for d in DIRECTORY_DOMAINS):
+        return True
+
+    path = parsed.path.lower()
+    if any(p in path for p in ["/search", "/find", "/category", "/directory", "/best-", "/top-", "/near-me", "/blog/"]):
+        return True
+
+    if JUNK_PATTERNS.search(title):
+        return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Live Search Discovery via Yahoo Search
+# ---------------------------------------------------------------------------
+
+async def search_yahoo(query: str, max_pages: int = 2) -> List[Dict[str, str]]:
+    """
+    Scrape Yahoo Search for genuine organic business websites.
+    Filters out ads (aclick), directory aggregators, and blog posts.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    candidates: List[Dict[str, str]] = []
+    seen_domains: Set[str] = set()
+
+    try:
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=7.0) as client:
+            for page in range(max_pages):
+                start = page * 10 + 1
+                resp = await client.get("https://search.yahoo.com/search", params={"p": query, "b": start})
+                if resp.status_code != 200:
+                    break
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for div in soup.find_all("div", class_="compTitle"):
+                    h3 = div.find("h3")
+                    a = div.find("a", href=True)
+                    if not h3 or not a:
+                        continue
+
+                    title = h3.get_text(strip=True)
+                    raw_url = a["href"]
+                    url = decode_yahoo_url(raw_url)
+
+                    if not url.startswith("http") or "aclick" in url:
+                        continue
+                    if is_directory_or_junk(url, title):
+                        continue
+
+                    domain = urlparse(url).netloc.lower().replace("www.", "")
+                    if domain in seen_domains:
+                        continue
+                    seen_domains.add(domain)
+
+                    candidates.append({
+                        "title": title,
+                        "url": url,
+                        "snippet": "",
+                    })
+                await asyncio.sleep(0.05)
+    except Exception as exc:
+        logger.debug("Yahoo search error for query '%s': %s", query, exc)
+
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Deep Website Crawler & Live Enrichment
+# ---------------------------------------------------------------------------
+
+async def crawl_business_website(
+    client: httpx.AsyncClient,
+    candidate: Dict[str, str],
     category: str,
-    location_profile: Dict[str, Any],
-    count: int,
-    star: int,
-    mode: str,
-    seen_identifiers: set[str],
-) -> List[dict]:
+    city: str,
+    country_iso: str,
+    country_name: str,
+) -> Optional[dict]:
     """
-    Generate authentic, non-repetitive leads tailored specifically to
-    the given category and location profile.
+    Crawl business website homepage and contact subpage.
+    Extracts brand name, verified phone (E.164), real email, real Instagram.
+    Returns None if website is unreachable or irrelevant.
     """
-    suffixes = _get_category_suffixes(category)
-    leads: List[dict] = []
-    used_names: set[str] = set()
+    url = candidate["url"]
+    base_domain = urlparse(url).netloc
 
-    for idx in range(count * 3):
-        if len(leads) >= count:
+    try:
+        resp = await client.get(url, timeout=4.5)
+        if resp.status_code >= 400:
+            return None
+        html = resp.text[:1_000_000]
+    except Exception:
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # 1. Brand Name Extraction (JSON-LD -> og:site_name -> Clean Title)
+    brand_name = None
+    for script in soup.find_all("script", type="application/ld+json"):
+        if script.string:
+            try:
+                data = json.loads(script.string)
+                items = data if isinstance(data, list) else [data]
+                for it in items:
+                    if isinstance(it, dict):
+                        sub_items = it.get("@graph", [it]) if isinstance(it.get("@graph"), list) else [it]
+                        for sub in sub_items:
+                            if isinstance(sub, dict) and "name" in sub:
+                                t = str(sub.get("@type", "")).lower()
+                                if any(k in t for k in ("business", "store", "organization", "local", "place")):
+                                    candidate_name = clean_business_name(sub["name"])
+                                    if candidate_name and len(candidate_name) >= 3:
+                                        brand_name = candidate_name
+                                        break
+            except Exception:
+                pass
+        if brand_name:
             break
 
-        # Generate realistic, prestigious business name
-        s1 = random.choice(SURNAMES)
-        p = random.choice(PREFIXES)
-        suf = random.choice(suffixes)
-        style = random.choice([1, 2, 3, 4])
+    if not brand_name:
+        og_site = soup.find("meta", property=re.compile(r"^og:site_name$", re.I)) or soup.find("meta", attrs={"name": re.compile(r"^og:site_name$", re.I)})
+        if og_site and og_site.get("content"):
+            brand_name = clean_business_name(og_site["content"])
 
-        if style == 1:
-            name = f"{p} {s1} {suf}"
-        elif style == 2:
-            s2 = random.choice([s for s in SURNAMES if s != s1])
-            name = f"{s1} & {s2} {suf}"
-        elif style == 3:
-            name = f"{s1} {suf}"
-        else:
-            name = f"{p} {suf}"
+    if not brand_name:
+        brand_name = clean_business_name(candidate["title"])
 
-        if name in used_names or name in seen_identifiers:
-            continue
-        used_names.add(name)
+    if not brand_name or len(brand_name) < 2:
+        brand_name = base_domain.replace("www.", "").split(".")[0].title()
 
-        # Phone generation
-        disp_phone, e164 = generate_valid_phone(
-            location_profile["country_code"], location_profile.get("area_codes")
-        )
-        if e164 in seen_identifiers:
-            continue
-        seen_identifiers.add(e164)
+    # 2. Collect Candidate Subpages for Contact/About
+    contact_urls: List[str] = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        lower_href = href.lower()
+        if any(w in lower_href for w in ["contact", "about", "connect", "location"]):
+            if href.startswith("http"):
+                if urlparse(href).netloc == base_domain:
+                    contact_urls.append(href)
+            elif href.startswith("/"):
+                contact_urls.append(f"{urlparse(url).scheme}://{base_domain}{href}")
 
-        # Address construction
-        district = random.choice(location_profile["districts"])
-        street = random.choice(location_profile["streets"])
-        num = random.randint(12, 498)
-        zip_code = random.choice(location_profile["postal_codes"])
-        city_name = location_profile["city"]
-        state_name = location_profile.get("state", "")
+    contact_html = ""
+    if contact_urls:
+        try:
+            c_resp = await client.get(contact_urls[0], timeout=3.5)
+            if c_resp.status_code == 200:
+                contact_html = c_resp.text[:100_000]
+        except Exception:
+            pass
 
-        addr = f"{num} {street}, {district}, {city_name}"
-        if state_name:
-            addr += f", {state_name} {zip_code}"
+    combined_html = html + " " + contact_html
+    combined_soup = BeautifulSoup(combined_html, "html.parser")
+    combined_text = combined_soup.get_text(" ", strip=True)
 
-        # Clean digital presence
-        clean_slug = "".join(c for c in name.lower() if c.isalnum())[:16]
-        prefix_email = random.choice(["enquiries", "info", "studio", "gallery", "director", "contact"])
-        email = f"{prefix_email}@{clean_slug}.com"
-        website = f"https://www.{clean_slug}.com"
-        ig_handle = clean_slug
-        ig_url = f"https://www.instagram.com/{clean_slug}/"
+    # 3. Phone Extraction & E.164 Verification
+    raw_phones: List[str] = []
+    for a in combined_soup.find_all("a", href=re.compile(r"^tel:", re.I)):
+        raw_phones.append(a["href"].replace("tel:", "").strip())
 
-        # Rating matching
-        if star == 0:
-            rating = round(random.uniform(4.3, 5.0), 1)
-        elif mode == "exact":
-            if star == 5:
-                rating = round(random.uniform(4.6, 5.0), 1)
-            elif star == 4:
-                rating = round(random.uniform(3.6, 4.4), 1)
-            elif star == 3:
-                rating = round(random.uniform(2.6, 3.4), 1)
-            elif star == 2:
-                rating = round(random.uniform(1.6, 2.4), 1)
-            else:
-                rating = round(random.uniform(1.0, 1.4), 1)
-        else:
-            min_r = max(1.0, star - 0.4)
-            max_r = min(5.0, star + 0.4)
-            rating = round(random.uniform(min_r, max_r), 1)
+    try:
+        for match in phonenumbers.PhoneNumberMatcher(combined_text, country_iso):
+            raw_phones.append(phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164))
+    except Exception:
+        pass
 
-        lead = {
-            "name": name,
-            "address": addr,
-            "rating": rating,
-            "phone": disp_phone,
-            "phone_e164": e164,
-            "email": email,
-            "instagram_handle": ig_handle,
-            "instagram_url": ig_url,
-            "website": website,
-            "category": category.strip().title(),
-            "city": city_name,
-            "country_code": location_profile["country_code"],
-            "source": "verified_global_registry",
-        }
-        leads.append(lead)
+    disp_phone: Optional[str] = None
+    phone_e164: Optional[str] = None
+    for p in raw_phones:
+        e164, disp, _ = validate_and_format_phone(p, country_iso)
+        if e164:
+            phone_e164 = e164
+            disp_phone = disp
+            break
 
-    return leads
+    # 4. Email Extraction
+    raw_emails: List[str] = []
+    for a in combined_soup.find_all("a", href=re.compile(r"^mailto:", re.I)):
+        clean_m = a["href"].replace("mailto:", "").split("?")[0].strip()
+        if clean_m and "@" in clean_m:
+            raw_emails.append(clean_m)
+
+    email_matches = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', combined_text)
+    for em in email_matches:
+        if not re.search(r'\.(png|jpg|jpeg|svg|webp|gif|css|js)$', em, re.I):
+            if not any(ign in em.lower() for ign in ["sentry", "cloudflare", "wixpress", "example.com", "domain.com"]):
+                raw_emails.append(em)
+
+    ranked_emails = rank_emails(raw_emails)
+    email = ranked_emails[0] if ranked_emails else ""
+
+    # 5. Instagram Extraction
+    ig_handle, ig_url = extract_instagram(combined_html, url)
+
+    # 6. Address Extraction
+    address = None
+    for script in combined_soup.find_all("script", type="application/ld+json"):
+        if script.string:
+            try:
+                data = json.loads(script.string)
+                items = data if isinstance(data, list) else [data]
+                for it in items:
+                    if isinstance(it, dict) and "address" in it:
+                        addr_obj = it["address"]
+                        if isinstance(addr_obj, dict):
+                            parts = [
+                                addr_obj.get("streetAddress"),
+                                addr_obj.get("addressLocality") or city,
+                                addr_obj.get("postalCode"),
+                                addr_obj.get("addressCountry") or country_name,
+                            ]
+                            clean_parts = [str(p).strip() for p in parts if p]
+                            if clean_parts:
+                                address = ", ".join(clean_parts)
+                                break
+                        elif isinstance(addr_obj, str):
+                            address = addr_obj.strip()
+                            break
+            except Exception:
+                pass
+        if address:
+            break
+
+    if not address:
+        address = f"{city}, {country_name}"
+
+    # 7. Rating Extraction
+    rating: Optional[float] = None
+    for script in combined_soup.find_all("script", type="application/ld+json"):
+        if script.string:
+            try:
+                data = json.loads(script.string)
+                items = data if isinstance(data, list) else [data]
+                for it in items:
+                    if isinstance(it, dict) and "aggregateRating" in it:
+                        ar = it["aggregateRating"]
+                        if isinstance(ar, dict) and "ratingValue" in ar:
+                            val = float(ar["ratingValue"])
+                            if 1.0 <= val <= 5.0:
+                                rating = round(val, 1)
+                                break
+            except Exception:
+                pass
+        if rating is not None:
+            break
+
+    lead = {
+        "name": brand_name,
+        "address": address,
+        "rating": rating,
+        "phone": disp_phone or "",
+        "phone_e164": phone_e164,
+        "email": email,
+        "instagram_handle": ig_handle,
+        "instagram_url": ig_url,
+        "website": url,
+        "category": category.strip().title(),
+        "city": city,
+        "country_code": country_iso,
+        "source": "live_web",
+    }
+    return lead
 
 
 # ---------------------------------------------------------------------------
-# Core Extraction Generator (Guarantees Full Requested Volume)
+# Core Extraction Async Generator (Zero Synthetic Padding)
 # ---------------------------------------------------------------------------
 
 async def extract_leads(
@@ -357,17 +500,19 @@ async def extract_leads(
     mode: str = "approx",
 ) -> AsyncIterator[dict]:
     """
-    Main async generator for the Global B2B Lead Extractor.
-    Guarantees delivering exact requested volume (10–1,000 leads) for ANY
-    category and ANY location on Earth without stalling or capping at 30.
+    100% Genuine async generator for the Global B2B Lead Extractor.
+    Streams verified real leads discovered live from the web.
+    Gracefully completes when target volume is reached or live sources are exhausted.
+    NEVER pads with synthetic or procedural data.
     """
     clean_cat = category.strip()
     cities = parse_multi_city(location)
-    total_target = max(10, min(volume, 1000))
+    total_target = max(5, min(volume, 1000))
 
-    per_city_target = max(1, (total_target + len(cities) - 1) // len(cities))
     yielded_count = 0
-    seen_identifiers: set[str] = set()
+    seen_identifiers: Set[str] = set()
+
+    sem = asyncio.Semaphore(10)
 
     for city in cities:
         if yielded_count >= total_target:
@@ -376,161 +521,90 @@ async def extract_leads(
         city_clean = city.strip()
         loc_profile = resolve_any_global_location(city_clean)
         country_iso = loc_profile["country_code"]
-        needed = min(per_city_target, total_target - yielded_count)
-        city_yielded = 0
-        new_leads_for_cache: List[dict] = []
+        country_name = loc_profile["country_name"]
+        city_name = loc_profile["city"]
 
-        # ── Stage 1: Normalized & Fuzzy Cache Lookup ────────────────────────
+        # ── Tier 1: Check Genuine Cache First ──────────────────────────────
         cached = get_cached_leads_for_city(clean_cat, city_clean)
-        filtered = filter_by_rating(cached, star, mode, needed * 2)
+        filtered_cached = filter_by_rating(cached, star, mode, total_target - yielded_count)
 
-        for raw_lead in filtered:
-            if yielded_count >= total_target or city_yielded >= needed:
+        for raw_lead in filtered_cached:
+            if yielded_count >= total_target:
                 break
 
-            phone = raw_lead.get("phone", "")
             phone_e164 = raw_lead.get("phone_e164")
-
-            if not phone_e164 and phone:
-                e164, disp, _ = validate_and_format_phone(phone, country_iso)
-                phone_e164 = e164
-                if disp:
-                    phone = disp
-
-            ident = phone_e164 or phone or raw_lead.get("name")
+            website = raw_lead.get("website")
+            ident = phone_e164 or website or raw_lead.get("name")
             if not ident or ident in seen_identifiers:
                 continue
 
             seen_identifiers.add(ident)
             yielded_count += 1
-            city_yielded += 1
+            yield raw_lead
+            await asyncio.sleep(0.01)
 
-            lead_dict = {
-                "name": raw_lead.get("name", ""),
-                "address": raw_lead.get("address", f"{loc_profile['city']}"),
-                "rating": raw_lead.get("rating"),
-                "phone": phone,
-                "phone_e164": phone_e164,
-                "email": raw_lead.get("email", ""),
-                "instagram_handle": raw_lead.get("instagram_handle"),
-                "instagram_url": raw_lead.get("instagram_url"),
-                "website": raw_lead.get("website", ""),
-                "category": clean_cat.title(),
-                "city": loc_profile["city"],
-                "country_code": country_iso,
-                "source": raw_lead.get("source", "verified_cache"),
-            }
+        if yielded_count >= total_target:
+            break
 
-            yield lead_dict
-            await asyncio.sleep(0)
+        # ── Tier 2: Live Search Discovery & Crawling ────────────────────────
+        query_loc = city_clean if "," in city_clean else f"{city_name} {loc_profile.get('state', '')}".strip() or city_name
+        queries = [
+            f"{query_loc} {clean_cat} services",
+            f"{query_loc} custom {clean_cat}",
+            f"{query_loc} {clean_cat} showroom",
+            f"{query_loc} {clean_cat} official website",
+        ]
 
-        # ── Stage 2: Fast Live Multi-Engine Query (if needed) ────────────────
-        if yielded_count < total_target and city_yielded < needed and len(cached) == 0:
-            try:
-                # Fast 1.0s attempt on Overpass
-                async for live_lead in _live_discover_fast(clean_cat, loc_profile, needed - city_yielded):
-                    if yielded_count >= total_target or city_yielded >= needed:
-                        break
-                    ident = live_lead.get("phone_e164") or live_lead.get("phone") or live_lead.get("name")
-                    if ident and ident not in seen_identifiers:
-                        seen_identifiers.add(ident)
-                        yielded_count += 1
-                        city_yielded += 1
-                        new_leads_for_cache.append(live_lead)
-                        yield live_lead
-                        await asyncio.sleep(0)
-            except Exception as exc:
-                logger.debug("Stage 2 live discovery error: %s", exc)
-
-        # ── Stage 3: Universal Dynamic Lead Expansion (Volume Guarantee) ─────
-        if yielded_count < total_target and city_yielded < needed:
-            remaining_for_city = needed - city_yielded
-            generated = generate_authentic_leads(
-                clean_cat, loc_profile, remaining_for_city, star, mode, seen_identifiers
-            )
-
-            for gen_lead in generated:
-                if yielded_count >= total_target or city_yielded >= needed:
+        new_leads_for_cache: List[dict] = []
+        async with make_client(country_iso=country_iso, timeout=5.0) as client:
+            for q in queries:
+                if yielded_count >= total_target:
                     break
 
-                ident = gen_lead["phone_e164"]
-                seen_identifiers.add(ident)
-                yielded_count += 1
-                city_yielded += 1
-                new_leads_for_cache.append(gen_lead)
-                yield gen_lead
-                await asyncio.sleep(0)
+                candidates = await search_yahoo(q, max_pages=2)
+                if not candidates:
+                    continue
 
-        # Persist newly enriched/generated records into cache
+                async def process_candidate(cand):
+                    async with sem:
+                        return await crawl_business_website(
+                            client, cand, clean_cat, city_name, country_iso, country_name
+                        )
+
+                tasks = [process_candidate(cand) for cand in candidates]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                for res in results:
+                    if yielded_count >= total_target:
+                        break
+                    if not isinstance(res, dict) or not res:
+                        continue
+
+                    ident = res.get("phone_e164") or res.get("website") or res.get("name")
+                    if not ident or ident in seen_identifiers:
+                        continue
+
+                    # Apply rating filter if lead has a rating
+                    if star > 0 and res.get("rating") is not None:
+                        lead_r = float(res["rating"])
+                        if mode == "exact":
+                            if round(lead_r) != star:
+                                continue
+                        else:
+                            if not (max(1.0, star - 0.5) <= lead_r <= min(5.0, star + 0.5)):
+                                continue
+
+                    seen_identifiers.add(ident)
+                    yielded_count += 1
+                    new_leads_for_cache.append(res)
+                    yield res
+                    await asyncio.sleep(0.01)
+
+        # Persist genuinely discovered leads to cache
         if new_leads_for_cache:
             try:
                 save_to_cache(clean_cat, city_clean, new_leads_for_cache)
             except Exception as exc:
                 logger.debug("Cache auto-save error: %s", exc)
 
-
-async def _live_discover_fast(
-    category: str,
-    loc_profile: Dict[str, Any],
-    limit: int,
-) -> AsyncIterator[dict]:
-    """Lightweight live discovery attempt via Overpass OSM with 1.2s timeout."""
-    city = loc_profile["city"]
-    country_iso = loc_profile["country_code"]
-    overpass_url = "https://overpass-api.de/api/interpreter"
-
-    tag_clause = '["shop"~"antiques|interior_decoration|furniture|art|boutique|watches|jewelry"]'
-    if "gym" in category.lower() or "fitness" in category.lower():
-        tag_clause = '["leisure"~"fitness_centre|sports_centre"]'
-    elif "cafe" in category.lower() or "coffee" in category.lower():
-        tag_clause = '["amenity"~"cafe"]'
-    elif "architect" in category.lower():
-        tag_clause = '["office"~"architect|architectural_design"]'
-
-    query = f"""
-    [out:json][timeout:2];
-    area["name"~"{city}",i]["admin_level"~"^(4|6|8)$"]->.searchArea;
-    (
-      node{tag_clause}(area.searchArea);
-      way{tag_clause}(area.searchArea);
-    );
-    out center tags {min(limit, 20)};
-    """
-
-    try:
-        async with make_client(country_iso=country_iso, timeout=1.8) as client:
-            resp = await client.post(overpass_url, data={"data": query})
-            if resp.status_code == 200:
-                data = resp.json()
-                for el in data.get("elements", []):
-                    tags = el.get("tags", {})
-                    name = tags.get("name")
-                    if not name:
-                        continue
-                    raw_phone = tags.get("phone") or tags.get("contact:phone") or ""
-                    e164, disp_phone, _ = validate_and_format_phone(raw_phone, country_iso)
-                    if not e164:
-                        disp_phone, e164 = generate_valid_phone(country_iso, loc_profile.get("area_codes"))
-
-                    street = tags.get("addr:street") or random.choice(loc_profile["streets"])
-                    district = random.choice(loc_profile["districts"])
-                    addr = f"{random.randint(10, 450)} {street}, {district}, {city}"
-
-                    clean_slug = "".join(c for c in name.lower() if c.isalnum())[:16]
-                    yield {
-                        "name": name,
-                        "address": addr,
-                        "rating": round(random.uniform(4.3, 4.9), 1),
-                        "phone": disp_phone,
-                        "phone_e164": e164,
-                        "email": tags.get("email") or tags.get("contact:email") or f"info@{clean_slug}.com",
-                        "instagram_handle": tags.get("contact:instagram", "").lstrip("@") or clean_slug,
-                        "instagram_url": f"https://www.instagram.com/{clean_slug}/",
-                        "website": tags.get("website") or f"https://www.{clean_slug}.com",
-                        "category": category.strip().title(),
-                        "city": city,
-                        "country_code": country_iso,
-                        "source": "osm_live",
-                    }
-    except Exception:
-        pass
+    logger.info("Extraction complete: delivered %d genuine leads", yielded_count)

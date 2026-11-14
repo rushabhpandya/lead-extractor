@@ -102,7 +102,7 @@ class AsyncProxyClientPool:
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": _LANG_HEADERS.get(self._country_iso, "en-US,en;q=0.9"),
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
         }
@@ -159,7 +159,7 @@ def make_client(country_iso: str = "IN", timeout: float = 8.0) -> httpx.AsyncCli
         "User-Agent": random.choice(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": _LANG_HEADERS.get(country_iso, "en-US,en;q=0.9"),
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": "gzip, deflate",
         "Connection": "keep-alive",
     }
     return httpx.AsyncClient(

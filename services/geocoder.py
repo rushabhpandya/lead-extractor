@@ -542,12 +542,44 @@ LOCATION_ALIASES: Dict[str, str] = {
 }
 
 
+# Broad Region / State expansion mappings
+REGION_EXPANSION_MAP: Dict[str, List[str]] = {
+    "texas": ["Austin, TX", "Dallas, TX", "Houston, TX", "San Antonio, TX", "Fort Worth, TX"],
+    "tx": ["Austin, TX", "Dallas, TX", "Houston, TX", "San Antonio, TX", "Fort Worth, TX"],
+    "california": ["Los Angeles, CA", "San Francisco, CA", "San Diego, CA", "Beverly Hills, CA"],
+    "ca": ["Los Angeles, CA", "San Francisco, CA", "San Diego, CA", "Beverly Hills, CA"],
+    "florida": ["Miami, FL", "Palm Beach, FL", "Tampa, FL", "Orlando, FL", "Fort Lauderdale, FL"],
+    "fl": ["Miami, FL", "Palm Beach, FL", "Tampa, FL", "Orlando, FL", "Fort Lauderdale, FL"],
+    "new york state": ["New York, NY", "Brooklyn, NY", "Manhattan, NY"],
+    "uk": ["Mayfair, London", "Chelsea, London", "Manchester", "Edinburgh", "Birmingham"],
+    "united kingdom": ["Mayfair, London", "Chelsea, London", "Manchester", "Edinburgh", "Birmingham"],
+    "england": ["Mayfair, London", "Chelsea, London", "Manchester", "Birmingham"],
+    "france": ["Paris", "Nice", "Cannes", "Lyon", "Bordeaux"],
+    "uae": ["Dubai", "Abu Dhabi"],
+    "united arab emirates": ["Dubai", "Abu Dhabi"],
+    "italy": ["Milan", "Rome", "Florence", "Venice"],
+    "germany": ["Berlin", "Munich", "Frankfurt", "Hamburg"],
+    "switzerland": ["Geneva", "Zurich", "Basel"],
+    "india": ["Mumbai", "Delhi", "Bengaluru", "Hyderabad", "Chennai", "Pune", "Ahmedabad", "Kolkata"],
+}
+
+
+def expand_global_region(location_str: str) -> List[str]:
+    """If a location string represents a state or region, expand it into major cities."""
+    import re
+    cleaned = location_str.strip().lower()
+    for reg, cities in REGION_EXPANSION_MAP.items():
+        if re.search(rf"\b{re.escape(reg)}\b", cleaned):
+            return cities
+    return [location_str.strip()]
+
+
 def resolve_any_global_location(location_str: str) -> Dict[str, Any]:
     """
     Resolve any location query (city, district, neighborhood, country)
-    into a standardized profile with country code, dialing code, area codes,
-    and real commercial districts/streets.
+    into a standardized profile with country code, dialing code, area codes.
     """
+    import re
     cleaned = location_str.strip().lower()
     cleaned_base = cleaned.replace(", usa", "").replace(", uk", "").replace(", india", "").strip()
     first_part = cleaned.split(",")[0].strip()
@@ -567,9 +599,9 @@ def resolve_any_global_location(location_str: str) -> Dict[str, Any]:
     elif first_part in LOCATION_ALIASES:
         target_key = LOCATION_ALIASES[first_part]
     else:
-        # Partial scan
+        # Strict word boundary scan
         for key in GLOBAL_HUBS_DIRECTORY:
-            if key in cleaned or cleaned in key:
+            if re.search(rf"\b{re.escape(key)}\b", cleaned):
                 target_key = key
                 break
 
@@ -586,6 +618,7 @@ def _resolve_dynamic_location(location_str: str) -> Dict[str, Any]:
     city_name = location_str.split(",")[0].strip().title()
     country_code = "US"
     country_name = "United States"
+    state_name = ""
 
     try:
         resp = httpx.get(
@@ -600,6 +633,7 @@ def _resolve_dynamic_location(location_str: str) -> Dict[str, Any]:
                 addr = data[0].get("address", {})
                 country_code = addr.get("country_code", "").upper() or "US"
                 country_name = addr.get("country", "Unknown")
+                state_name = addr.get("state", "")
                 city_name = (
                     addr.get("city")
                     or addr.get("town")
@@ -616,97 +650,40 @@ def _resolve_dynamic_location(location_str: str) -> Dict[str, Any]:
 
     return {
         "city": city_name,
-        "state": "",
+        "state": state_name,
         "country_code": country_code,
         "country_name": country_name,
         "dialing_prefix": dialing_prefix,
         "area_codes": [],
-        "districts": [
-            f"{city_name} City Centre", f"{city_name} Commercial District",
-            f"{city_name} Arts District", f"Old Town {city_name}",
-            f"{city_name} Financial District", f"West {city_name}", f"North {city_name}"
-        ],
-        "streets": [
-            "High Street", "Main Street", "Grand Avenue", "Commercial Road",
-            "Market Street", "Church Street", "Victoria Boulevard", "Central Avenue"
-        ],
-        "postal_codes": [f"{random.randint(10000, 99999)}"],
+        "districts": [],
+        "streets": [],
+        "postal_codes": [],
     }
-
-
-def generate_valid_phone(country_code: str, area_codes: Optional[List[str]] = None) -> Tuple[str, str]:
-    """
-    Generate 100% verified E.164 and international display phone numbers
-    matching that exact country and area code.
-    """
-    iso = (country_code or "US").upper()
-    cc = phonenumbers.country_code_for_region(iso) or 1
-
-    for _ in range(50):
-        if iso == "US":
-            area = random.choice(area_codes) if area_codes else random.choice(["305", "786", "212", "310", "415", "617"])
-            raw = f"+1 {area} {random.randint(200, 999)} {random.randint(1000, 9999)}"
-        elif iso == "CH":
-            area = random.choice(area_codes) if area_codes else "22"
-            raw = f"+41 {area} {random.randint(200, 999)} {random.randint(10, 99)} {random.randint(10, 99)}"
-        elif iso == "FR":
-            raw = f"+33 1 {random.randint(40, 49)} {random.randint(10, 99)} {random.randint(10, 99)} {random.randint(10, 99)}"
-        elif iso == "GB":
-            raw = f"+44 20 {random.randint(7000, 8999)} {random.randint(1000, 9999)}"
-        elif iso == "AE":
-            raw = f"+971 4 {random.randint(300, 599)} {random.randint(1000, 9999)}"
-        elif iso == "IN":
-            prefix = random.choice(["98", "99", "97", "91", "88", "77"])
-            rest = random.randint(10000000, 99999999)
-            raw = f"+91 {prefix}{str(rest)[:3]} {str(rest)[3:]}"
-        elif iso == "IT":
-            raw = f"+39 02 {random.randint(2000, 8999)} {random.randint(1000, 9999)}"
-        elif iso == "DE":
-            raw = f"+49 30 {random.randint(2000, 8999)} {random.randint(1000, 9999)}"
-        elif iso == "ES":
-            raw = f"+34 91 {random.randint(200, 899)} {random.randint(10, 99)} {random.randint(10, 99)}"
-        elif iso == "JP":
-            raw = f"+81 3 {random.randint(3000, 6999)} {random.randint(1000, 9999)}"
-        elif iso == "SG":
-            raw = f"+65 {random.choice([6, 8, 9])}{random.randint(100, 999)} {random.randint(1000, 9999)}"
-        elif iso == "HK":
-            raw = f"+852 {random.choice([2, 3, 5, 6, 9])}{random.randint(100, 999)} {random.randint(1000, 9999)}"
-        elif iso == "AU":
-            raw = f"+61 2 {random.randint(8000, 9999)} {random.randint(1000, 9999)}"
-        elif iso == "CA":
-            raw = f"+1 416 {random.randint(200, 999)} {random.randint(1000, 9999)}"
-        elif iso == "MC":
-            raw = f"+377 99 {random.randint(10, 99)} {random.randint(10, 99)} {random.randint(10, 99)}"
-        else:
-            ex = phonenumbers.example_number(iso)
-            if not ex:
-                raw = f"+1 305 {random.randint(200, 999)} {random.randint(1000, 9999)}"
-                iso = "US"
-            else:
-                digits = str(ex.national_number)
-                new_digits = digits[:-4] + str(random.randint(1000, 9999))
-                raw = f"+{cc}{new_digits}"
-
-        try:
-            p = phonenumbers.parse(raw, iso)
-            if phonenumbers.is_valid_number(p):
-                disp = phonenumbers.format_number(p, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
-                e164 = phonenumbers.format_number(p, phonenumbers.PhoneNumberFormat.E164)
-                return disp, e164
-        except Exception:
-            pass
-
-    return "+1 305 555 0199", "+13055550199"
 
 
 def get_country_and_sublocalities(city_input: str) -> Tuple[str, List[str]]:
     """Legacy compatibility helper returning (country_code, list_of_sublocalities)."""
     profile = resolve_any_global_location(city_input)
-    return profile["country_code"], profile["districts"]
+    return profile["country_code"], profile.get("districts", [])
 
 
 def parse_multi_city(location_input: str) -> List[str]:
-    """Parse semicolon- or pipe-separated list of cities."""
+    """Parse semicolon- or pipe-separated list of cities, expanding states/regions if present."""
     import re
-    cities = [c.strip() for c in re.split(r"[;|]", location_input) if c.strip()]
-    return cities if cities else [location_input.strip()]
+    parts = [c.strip() for c in re.split(r"[;|]", location_input) if c.strip()]
+    if not parts:
+        parts = [location_input.strip()]
+    
+    expanded: List[str] = []
+    for p in parts:
+        exp = expand_global_region(p)
+        expanded.extend(exp)
+    
+    # Deduplicate while preserving order
+    seen = set()
+    result = []
+    for c in expanded:
+        if c.lower() not in seen:
+            seen.add(c.lower())
+            result.append(c)
+    return result
