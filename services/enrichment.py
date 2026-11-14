@@ -109,36 +109,56 @@ def extract_phones_from_text(text: str, default_region: str = "IN") -> List[str]
 def validate_and_format_phone(
     raw_phone: str,
     default_region: str = "IN",
-) -> Tuple[Optional[str], Optional[str], bool]:
+    target_iso: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
     """
-    Validate a raw phone string and return (e164, display, is_whatsapp_ready).
+    Validate a raw phone string and return (e164, display, is_whatsapp_ready, verified_region).
 
-    is_whatsapp_ready = True when the number is a mobile or fixed_or_mobile type.
+    Strict Target-Country Phone Region Alignment (Rule 1):
+    If target_iso (or default_region) is provided, immediately discards candidate
+    numbers belonging to foreign calling codes or telecom regions.
 
-    Returns (None, None, False) if invalid.
+    Returns (None, None, False, None) if invalid or mismatched.
     """
     if not raw_phone:
-        return None, None, False
+        return None, None, False, None
 
     cleaned = re.sub(r"[\s\-.()\u00a0]", "", raw_phone)
     if not cleaned:
-        return None, None, False
+        return None, None, False, None
 
-    # Ensure leading + for E.164 candidates
+    # Ensure leading + for international format
     if cleaned.startswith("00"):
         cleaned = "+" + cleaned[2:]
-    elif not cleaned.startswith("+") and len(cleaned) >= 10:
-        # Try with + prefix
-        cleaned_with_plus = "+" + cleaned
+
+    target_country = (target_iso or default_region or "").upper().strip()
 
     if _HAS_PHONENUMBERS:
+        target_cc = phonenumbers.country_code_for_region(target_country) if target_country else 0
+
         for attempt in [cleaned, cleaned.replace("+", "")]:
             try:
-                parsed = phonenumbers.parse(attempt, default_region)
+                parsed = phonenumbers.parse(attempt, target_country or default_region)
                 if phonenumbers.is_valid_number(parsed):
                     nsn = str(parsed.national_number)
                     if is_dummy_or_low_entropy_phone(nsn, parsed.country_code):
                         continue
+
+                    # Strict target-country alignment (Rule 1)
+                    if target_cc > 0:
+                        num_region = phonenumbers.region_code_for_number(parsed)
+                        calling_match = (parsed.country_code == target_cc)
+                        region_match = (num_region == target_country)
+                        
+                        if not (calling_match or region_match):
+                            continue
+
+                        # In non-NANP countries (+1), if a distinct foreign region is detected, reject
+                        if target_cc != 1 and num_region and num_region != target_country:
+                            valid_regions = phonenumbers.region_codes_for_country_code(target_cc)
+                            if target_country not in valid_regions:
+                                continue
+
                     e164 = phonenumbers.format_number(
                         parsed, phonenumbers.PhoneNumberFormat.E164
                     )
@@ -151,10 +171,11 @@ def validate_and_format_phone(
                         PhoneNumberType.FIXED_LINE_OR_MOBILE,
                         PhoneNumberType.FIXED_LINE,
                     )
-                    return e164, display, whatsapp
+                    verified_region = phonenumbers.region_code_for_number(parsed) or target_country
+                    return e164, display, whatsapp, verified_region
             except (NumberParseException, Exception):
                 continue
-        return None, None, False
+        return None, None, False, None
 
     # Fallback: India only
     digits = re.sub(r"\D", "", cleaned)
@@ -162,35 +183,36 @@ def validate_and_format_phone(
         digits = digits[2:]
     if _INDIA_MOBILE_RE.match(digits) and not is_dummy_or_low_entropy_phone(digits, 91):
         display = f"+91 {digits[:5]} {digits[5:]}"
-        return f"+91{digits}", display, True
-    return None, None, False
+        return f"+91{digits}", display, True, "IN"
+    return None, None, False, None
 
 
 def best_phone(
     phones: List[str],
     default_region: str = "IN",
-) -> Tuple[str, Optional[str], bool]:
+    target_iso: Optional[str] = None,
+) -> Tuple[str, Optional[str], bool, Optional[str]]:
     """
-    Pick the best phone from a list. Returns (raw, e164, is_whatsapp_ready).
+    Pick the best phone from a list. Returns (display/raw, e164, is_whatsapp_ready, verified_region).
     Prefers mobile numbers; falls back to first valid.
     """
     mobile_candidate = None
     first_valid = None
 
     for raw in phones:
-        e164, display, wa = validate_and_format_phone(raw, default_region)
+        e164, display, wa, v_reg = validate_and_format_phone(raw, default_region, target_iso)
         if e164 is None:
             continue
         if first_valid is None:
-            first_valid = (display or raw, e164, wa)
+            first_valid = (display or raw, e164, wa, v_reg)
         if wa and mobile_candidate is None:
-            mobile_candidate = (display or raw, e164, wa)
+            mobile_candidate = (display or raw, e164, wa, v_reg)
 
     if mobile_candidate:
         return mobile_candidate
     if first_valid:
         return first_valid
-    return (phones[0] if phones else "", None, False)
+    return (phones[0] if phones else "", None, False, None)
 
 
 # ---------------------------------------------------------------------------

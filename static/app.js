@@ -405,19 +405,25 @@ function appendRow(lead) {
   if (rawPhone) {
     const phoneStr = esc(rawPhone);
     const countryBadge = (() => {
-      if (lead.country_code) return esc(lead.country_code.toUpperCase());
+      // 1. Derive directly from verified E.164 phone prefix (Rule 1)
       if (rawPhone.startsWith('+91')) return 'IN';
       if (rawPhone.startsWith('+44')) return 'GB';
-      if (rawPhone.startsWith('+1'))  return 'US';
+      if (rawPhone.startsWith('+39')) return 'IT';
       if (rawPhone.startsWith('+33')) return 'FR';
-      if (rawPhone.startsWith('+41')) return 'CH';
+      if (rawPhone.startsWith('+49')) return 'DE';
+      if (rawPhone.startsWith('+34')) return 'ES';
+      if (rawPhone.startsWith('+1'))  return 'US';
       if (rawPhone.startsWith('+971')) return 'AE';
+      if (rawPhone.startsWith('+41')) return 'CH';
       if (rawPhone.startsWith('+81')) return 'JP';
       if (rawPhone.startsWith('+65')) return 'SG';
       if (rawPhone.startsWith('+61')) return 'AU';
-      if (rawPhone.startsWith('+49')) return 'DE';
-      if (rawPhone.startsWith('+39')) return 'IT';
-      if (rawPhone.startsWith('+34')) return 'ES';
+      if (rawPhone.startsWith('+31')) return 'NL';
+      if (rawPhone.startsWith('+32')) return 'BE';
+      if (rawPhone.startsWith('+43')) return 'AT';
+      if (rawPhone.startsWith('+351')) return 'PT';
+      // 2. Verified lead.country_code from backend phonenumbers library
+      if (lead.country_code) return esc(lead.country_code.toUpperCase());
       if (rawPhone.startsWith('+')) {
         const match = rawPhone.match(/^\+(\d{1,3})/);
         return match ? `+${match[1]}` : '';

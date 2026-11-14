@@ -106,11 +106,13 @@ DIRECTORY_DOMAINS: Set[str] = {
     "mountstreetneighbourhood.com", "mayfair-london.co.uk", "taskrabbit.com",
     "checkatrade.com", "mybuilder.com", "trustatrader.com", "gumtree.com",
     "craigslist.org", "porch.com", "nextdoor.com", "buildzoom.com",
+    "wanderlog.com", "culturetrip.com", "theculturetrip.com", "lonelyplanet.com",
+    "foursquare.com", "trustpilot.com", "glassdoor.com", "indeed.com",
     "swimcloud.com", "texaslonghorns.com", "worldaquatics.com", "olympics.com",
 }
 
 NON_BUSINESS_PATH_PATTERNS = re.compile(
-    r'(?i)/(?:blog|news|article|articles|story|stories|history|wiki|directory|list-of|top-\d+|best-\d+|category|tag|tags)(?:/|$)'
+    r'(?i)/(?:blog|blogs|news|article|articles|story|stories|history|wiki|directory|directories|list|lists|list-of|top-\d+|best-\d+|category|categories|tag|tags)(?:/|$)'
 )
 
 EDITORIAL_TITLE_PREFIXES = re.compile(
@@ -219,8 +221,123 @@ def filter_by_rating(leads: List[dict], star: int, mode: str, limit: int) -> Lis
 
 
 # ---------------------------------------------------------------------------
+# Universal Generic Title Blacklist & Public Sector Filters (Rules 2 & 3)
+# ---------------------------------------------------------------------------
+
+GENERIC_TITLE_BLACKLIST: Set[str] = {
+    # English
+    "contact", "contacts", "contact us", "get in touch", "about", "about us", "who we are",
+    "home", "homepage", "welcome", "index", "official site", "official website",
+    "services", "our services", "locations", "our locations", "privacy policy",
+    "terms of service", "terms and conditions", "terms", "login", "sign in", "portal",
+    "menu", "products", "gallery", "portfolio", "store", "shop", "blog", "news",
+    # Italian
+    "contatti", "contattaci", "chi siamo", "dove siamo", "home page", "pagina iniziale",
+    "benvenuto", "benvenuti", "sito ufficiale", "servizi", "i nostri servizi", "accedi",
+    "entra", "privacy", "negozio",
+    # French
+    "contactez-nous", "contactez nous", "nous contacter",
+    "a propos", "à propos", "qui sommes-nous", "qui sommes nous", "accueil", "bienvenue",
+    "site officiel", "nos services", "mentions legales", "mentions légales", "connexion",
+    # German
+    "kontakt", "kontaktiere uns", "uber uns", "über uns", "wer wir sind",
+    "startseite", "willkommen", "offizielle webseite", "offizielle website",
+    "dienstleistungen", "anmelden", "impressum", "datenschutz",
+    # Spanish
+    "contacto", "contactenos", "contáctenos", "sobre nosotros", "quienes somos",
+    "quiénes somos", "inicio", "bienvenido", "bienvenidos", "sitio oficial",
+    "pagina oficial", "servicios", "iniciar sesion", "iniciar sesión", "aviso legal",
+}
+
+GENERIC_TITLE_PATTERN = re.compile(
+    r'(?i)^(?:contact|contacts|contact\s+us|contatti|contactez-nous|contactez\s+nous|kontakt|about|about\s+us|chi\s+siamo|qui\s+sommes-nous|über\s+uns|home|homepage|welcome|index|official\s+site|official\s+website|sito\s+ufficiale|site\s+officiel|offizielle\s+webseite|services|our\s+services|locations|privacy\s+policy|login|sign\s+in)\b'
+)
+
+PUBLIC_SECTOR_JUNK_PATTERNS = re.compile(
+    r'(?i)(?:\.gov\b|\.gob\b|\.gouv\b|\.mil\b|gov\.|gob\.|gouv\.|comune\.|municipality|turismo|tourism|publictransit|metropolitan\s+transit)'
+)
+
+LOCALIZED_CATEGORY_TERMS: Dict[str, Dict[str, List[str]]] = {
+    "antique": {
+        "IT": ["antiquariato", "antiquaria", "antichi", "antico", "antichità", "antichita"],
+        "FR": ["antiquités", "antiquites", "antiquaire", "ancien"],
+        "ES": ["antigüedades", "antiguedades", "anticuario", "antiguo"],
+        "DE": ["antiquitäten", "antiquitaeten", "antik", "antiquariat"],
+    },
+    "gallery": {
+        "IT": ["galleria", "mostra", "collezione"],
+        "FR": ["galerie", "exposition"],
+        "ES": ["galería", "galeria", "exposición"],
+        "DE": ["galerie", "ausstellung"],
+    },
+    "art": {
+        "IT": ["arte", "pittura", "scultura"],
+        "FR": ["art", "peinture", "sculpture"],
+        "ES": ["arte", "pintura", "escultura"],
+        "DE": ["kunst", "gemälde"],
+    },
+    "carpenter": {
+        "IT": ["falegname", "falegnameria", "legno"],
+        "FR": ["menuisier", "menuiserie", "charpentier", "ébéniste", "ebeniste"],
+        "ES": ["carpintero", "carpintería", "carpinteria", "madera"],
+        "DE": ["schreiner", "schreinerei", "tischler", "tischlerei", "holz"],
+    },
+    "furniture": {
+        "IT": ["mobili", "arredamento", "arredo"],
+        "FR": ["meubles", "mobilier"],
+        "ES": ["muebles", "mobiliario"],
+        "DE": ["möbel", "moebel", "einrichtung"],
+    },
+    "interior": {
+        "IT": ["interni", "arredamento", "interior"],
+        "FR": ["intérieur", "interieur", "décoration"],
+        "ES": ["interiores", "decoración", "decoracion"],
+        "DE": ["innenarchitektur", "raumgestaltung"],
+    },
+    "gym": {
+        "IT": ["palestra", "fitness", "allenamento"],
+        "FR": ["salle de sport", "fitness", "musculation"],
+        "ES": ["gimnasio", "fitness"],
+        "DE": ["fitnessstudio", "fitness", "krafttraining"],
+    },
+    "architect": {
+        "IT": ["architetto", "architettura", "studio tecnico"],
+        "FR": ["architecte", "architecture"],
+        "ES": ["arquitecto", "arquitectura"],
+        "DE": ["architekt", "architektur", "bauplanung"],
+    },
+    "lawyer": {
+        "IT": ["avvocato", "studio legale", "legale"],
+        "FR": ["avocat", "cabinet d'avocats", "juridique"],
+        "ES": ["abogado", "despacho de abogados", "bufete"],
+        "DE": ["rechtsanwalt", "anwalt", "kanzlei"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Domain-Aware Brand Name Resolution & Result Cleaning
 # ---------------------------------------------------------------------------
+
+def brand_from_root_domain(root_domain: str) -> str:
+    """Derive a clean, Title-Cased brand name from the registrable root domain."""
+    if not root_domain:
+        return ""
+    sld = root_domain.split(".")[0].lower()
+    tokens = re.split(r"[-_]+", sld)
+    clean_tokens = []
+    for tok in tokens:
+        if not tok:
+            continue
+        if tok.lower() in ("tx", "uk", "usa", "nyc", "la", "fl", "ca"):
+            clean_tokens.append(tok.upper())
+        elif tok.lower().startswith("tx") and len(tok) > 2:
+            clean_tokens.append("TX")
+            clean_tokens.append(tok[2:].title())
+        else:
+            clean_tokens.append(tok.title())
+    return " ".join(clean_tokens)
+
 
 def resolve_brand_name(
     og_site_name: Optional[str],
@@ -229,45 +346,60 @@ def resolve_brand_name(
     root_domain: str,
     city: str,
     state: str = "",
+    country: str = "",
 ) -> str:
     """
-    Select the true brand name, scoring title chunks against root-domain tokens.
-    Never outputs a bare city or state name.
+    Select the true brand name strictly locked to the homepage (Rule 2).
+    Rejects generic navigation titles (contact, about, home, etc.) across languages.
+    Never outputs a bare city, state, or country name.
+    Falls back to og:site_name, JSON-LD name, or clean root domain brand.
     """
     city_lower = (city or "").lower().strip()
     state_lower = (state or "").lower().strip()
+    country_lower = (country or "").lower().strip()
     banned = {
-        city_lower, state_lower, f"{city_lower}, {state_lower}",
-        "home", "welcome", "official website", "contact us", "about us",
+        city_lower, state_lower, country_lower,
+        f"{city_lower}, {state_lower}".strip(", "),
+        f"{city_lower}, {country_lower}".strip(", "),
     }
+    banned.update(GENERIC_TITLE_BLACKLIST)
 
-    # 1. Prefer og:site_name if 2..55 chars and not a location/filler
-    if og_site_name and 2 <= len(og_site_name.strip()) <= 55:
-        c = og_site_name.strip()
-        if c.lower() not in banned and not re.search(r'^(home|welcome|contact)\b', c, re.I):
-            return c
+    def is_valid_brand(cand: Optional[str]) -> bool:
+        if not cand:
+            return False
+        c = cand.strip()
+        if len(c) < 3 or len(c) > 60:
+            return False
+        c_low = c.lower()
+        if c_low in banned:
+            return False
+        if GENERIC_TITLE_PATTERN.search(c_low):
+            return False
+        if re.search(r'\b(best|top\s*\d+|reviews|near\s*me|official\s*website)\b', c_low):
+            return False
+        return True
 
-    # 2. Prefer JSON-LD Organization/LocalBusiness name if 2..55 chars
-    if json_ld_name and 2 <= len(json_ld_name.strip()) <= 55:
-        c = json_ld_name.strip()
-        if c.lower() not in banned and not re.search(r'^(home|welcome|contact)\b', c, re.I):
-            return c
+    # 1. Prefer og:site_name from homepage if valid
+    if is_valid_brand(og_site_name):
+        return og_site_name.strip()
 
-    # 3. Domain slug token overlap scoring
+    # 2. Prefer JSON-LD name from homepage if valid
+    if is_valid_brand(json_ld_name):
+        return json_ld_name.strip()
+
+    # 3. Domain slug token overlap scoring against homepage <title>
     domain_slug = root_domain.split(".")[0].lower() if root_domain else ""
     slug_tokens = set(re.findall(r"[a-z0-9]+", domain_slug))
 
     delims = r"[|·•\-\–\—\:]"
-    chunks = [c.strip() for c in re.split(delims, raw_title or "") if len(c.strip()) >= 2]
+    chunks = [c.strip() for c in re.split(delims, raw_title or "") if len(c.strip()) >= 3]
 
     scored = []
     for cand in chunks:
-        cand_lower = cand.lower().strip()
-        if cand_lower in banned:
-            continue
-        if re.search(r"\b(best|top\s*\d+|reviews|near\s*me|official\s*website)\b", cand_lower):
+        if not is_valid_brand(cand):
             continue
 
+        cand_lower = cand.lower().strip()
         cand_tokens = set(re.findall(r"[a-z0-9]+", cand_lower))
         overlap = len(cand_tokens.intersection(slug_tokens))
 
@@ -277,18 +409,199 @@ def resolve_brand_name(
         if domain_slug and domain_slug in cand_lower.replace(" ", ""):
             sub_score += 3
 
-        # Location penalty
-        loc_penalty = -3 if (city_lower and cand_lower == city_lower or (state_lower and cand_lower == state_lower)) else 0
+        loc_penalty = -5 if (cand_lower == city_lower or cand_lower == state_lower or cand_lower == country_lower) else 0
         score = overlap * 2 + sub_score + loc_penalty
         scored.append((score, len(cand), cand))
 
     if scored:
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
         best = scored[0][2]
-        if best.lower() not in banned:
+        if is_valid_brand(best):
             return best
 
-    return domain_slug.title() if domain_slug else (city.title() + " Studio")
+    # 4. Fall back to clean title-cased brand name derived from root domain
+    fallback = brand_from_root_domain(root_domain)
+    if is_valid_brand(fallback):
+        return fallback
+
+    return f"{city.title()} Studio" if city else "Local Business"
+
+
+def check_category_relevance(
+    category: str,
+    brand_name: str,
+    root_domain: str,
+    homepage_title: str,
+    meta_description: str,
+    headings: str,
+    json_ld_types: List[str],
+    snippet_title: str,
+    target_iso: str = "",
+) -> bool:
+    """
+    Semantic Category Relevance Gatekeeper (Rule 3):
+    Verifies that at least one root stem (>= 4 chars) of the category query (or its
+    localized equivalent) appears in the business's high-signal identity fields:
+      - Brand Name, Root Domain, Homepage <title>, <meta description>, <h1>/<h2> headings,
+        JSON-LD @type, or Snippet Title.
+    Rejects pages where the keyword only appears incidentally in footer/body text.
+    """
+    clean_cat = (category or "").lower().strip()
+    words = [w for w in re.findall(r"[a-zA-Z\u00C0-\u017F]+", clean_cat) if len(w) >= 3]
+    if not words:
+        return True
+
+    # Assemble candidate stems & localized equivalents
+    stems: Set[str] = set()
+    for w in words:
+        if len(w) >= 4:
+            stems.add(w[:min(len(w), 6)])
+            stems.add(w)
+        else:
+            stems.add(w)
+
+    # Add localized terms based on target_iso
+    iso_upper = (target_iso or "").upper().strip()
+    for cat_key, translations in LOCALIZED_CATEGORY_TERMS.items():
+        if cat_key in clean_cat or any(cat_key in w for w in words):
+            if iso_upper in translations:
+                for loc_word in translations[iso_upper]:
+                    loc_clean = loc_word.lower()
+                    if len(loc_clean) >= 4:
+                        stems.add(loc_clean[:min(len(loc_clean), 6)])
+                    stems.add(loc_clean)
+
+    # Build the high-signal text blob
+    high_signal_parts = [
+        brand_name,
+        root_domain.replace(".", " "),
+        homepage_title,
+        meta_description,
+        headings,
+        " ".join(json_ld_types),
+        snippet_title,
+    ]
+    high_signal = " ".join(high_signal_parts).lower()
+
+    # Check for stem or whole-word match
+    for stem in stems:
+        if len(stem) >= 4:
+            if stem in high_signal:
+                return True
+        else:
+            # 3-char words (e.g. gym, art, spa, law) require whole word boundary
+            if re.search(rf"\b{re.escape(stem)}\b", high_signal):
+                return True
+
+    return False
+
+
+def generate_query_waves(
+    category: str,
+    city: str,
+    state: str = "",
+    country_iso: str = "US",
+    districts: Optional[List[str]] = None,
+) -> List[List[str]]:
+    """
+    Generate prioritized waves of diverse, localized search queries (Rule 4).
+    Wave 1: Core English + Localized queries.
+    Wave 2: Studio / Firm / Company / Showroom + Sub-districts.
+    Wave 3: Contact / Phone / Email + Advanced discovery.
+    """
+    loc_base = f"{city} {state}".strip() if state else city
+    iso = (country_iso or "").upper().strip()
+    districts = districts or []
+
+    # Identify primary localized terms if applicable
+    loc_terms: List[str] = []
+    clean_cat = category.lower().strip()
+    for cat_key, trans in LOCALIZED_CATEGORY_TERMS.items():
+        if cat_key in clean_cat and iso in trans:
+            loc_terms.extend(trans[iso])
+
+    wave1 = [
+        f"{category} {loc_base}",
+        f"{category} showroom {loc_base}",
+        f"{category} official website {loc_base}",
+    ]
+    if loc_terms:
+        primary_loc = loc_terms[0]
+        wave1.append(f"{primary_loc} {loc_base}")
+        if len(loc_terms) > 1:
+            wave1.append(f"{loc_terms[1]} {loc_base}")
+
+    wave2 = [
+        f"{category} studio {loc_base}",
+        f"{category} firm {loc_base}",
+        f"{category} company {loc_base}",
+        f"{category} services {loc_base}",
+    ]
+    if loc_terms:
+        primary_loc = loc_terms[0]
+        if iso == "IT":
+            wave2.append(f"studio {primary_loc} {loc_base}")
+            wave2.append(f"{primary_loc} sito ufficiale {loc_base}")
+        elif iso == "FR":
+            wave2.append(f"atelier {primary_loc} {loc_base}")
+            wave2.append(f"{primary_loc} site officiel {loc_base}")
+        elif iso == "ES":
+            wave2.append(f"estudio {primary_loc} {loc_base}")
+            wave2.append(f"{primary_loc} sitio oficial {loc_base}")
+        elif iso == "DE":
+            wave2.append(f"{primary_loc} geschäft {loc_base}")
+            wave2.append(f"{primary_loc} offizielle webseite {loc_base}")
+
+    # Sub-district queries in Wave 2
+    for dist in districts[:4]:
+        wave2.append(f"{category} in {dist} {city}")
+        if loc_terms:
+            wave2.append(f"{loc_terms[0]} {dist} {city}")
+
+    wave3 = [
+        f"{category} {loc_base} contact phone email",
+        f"{category} {loc_base} address phone",
+    ]
+    if loc_terms:
+        primary_loc = loc_terms[0]
+        if iso == "IT":
+            wave3.append(f"{primary_loc} {loc_base} contatti telefono")
+        elif iso == "FR":
+            wave3.append(f"{primary_loc} {loc_base} contact téléphone")
+        elif iso == "ES":
+            wave3.append(f"{primary_loc} {loc_base} contacto teléfono")
+        elif iso == "DE":
+            wave3.append(f"{primary_loc} {loc_base} kontakt telefon")
+
+    for dist in districts[4:8]:
+        wave3.append(f"{category} in {dist} {city}")
+
+    return [wave1, wave2, wave3]
+
+
+def tld_priority_score(url: str, target_iso: str) -> int:
+    """Prioritize country-specific TLDs for target_iso (e.g. .it for IT, .fr for FR, .co.uk for GB)."""
+    tld_map = {
+        "IT": (".it",),
+        "FR": (".fr",),
+        "DE": (".de",),
+        "GB": (".co.uk", ".uk"),
+        "ES": (".es",),
+        "AE": (".ae",),
+        "IN": (".in", ".co.in"),
+        "US": (".com", ".us", ".org"),
+        "AU": (".com.au", ".au"),
+        "CH": (".ch",),
+        "NL": (".nl",),
+        "BE": (".be",),
+        "AT": (".at",),
+    }
+    iso = (target_iso or "").upper().strip()
+    if iso in tld_map:
+        parsed = urlparse(url).netloc.lower()
+        if any(parsed.endswith(suffix) for suffix in tld_map[iso]):
+            return 2
+    return 1
 
 
 def decode_yahoo_url(url: str) -> str:
@@ -319,6 +632,10 @@ def is_directory_or_junk(url: str, title: str) -> bool:
 
     # Title prefix check
     if EDITORIAL_TITLE_PREFIXES.search(title):
+        return True
+
+    # Public sector / municipal / tourism exclusion (Rule 3)
+    if PUBLIC_SECTOR_JUNK_PATTERNS.search(url) or PUBLIC_SECTOR_JUNK_PATTERNS.search(title):
         return True
 
     return False
@@ -404,8 +721,11 @@ async def crawl_business_website(
     root_domain = candidate.get("root_domain") or extract_root_domain(url)
     base_domain = urlparse(url).netloc
 
-    # Pre-crawl path rejection
-    if NON_BUSINESS_PATH_PATTERNS.search(urlparse(url).path):
+    # Pre-crawl path & public sector rejection (Rule 3)
+    parsed_path = urlparse(url).path
+    if NON_BUSINESS_PATH_PATTERNS.search(parsed_path):
+        return None
+    if PUBLIC_SECTOR_JUNK_PATTERNS.search(url):
         return None
 
     try:
@@ -424,11 +744,12 @@ async def crawl_business_website(
         return None
 
     raw_page_title = soup.title.get_text().strip() if soup.title else candidate["title"]
-    if EDITORIAL_TITLE_PREFIXES.search(raw_page_title):
+    if EDITORIAL_TITLE_PREFIXES.search(raw_page_title) or PUBLIC_SECTOR_JUNK_PATTERNS.search(raw_page_title):
         return None
 
-    # 1. Brand Name Extraction via Domain-Aware Scorer
+    # 1. Brand Name & Identity Extraction from Root Homepage Only (Rule 2)
     json_ld_name = None
+    json_ld_types: List[str] = []
     for script in soup.find_all("script", type="application/ld+json"):
         if script.string:
             try:
@@ -438,24 +759,43 @@ async def crawl_business_website(
                     if isinstance(it, dict):
                         sub_items = it.get("@graph", [it]) if isinstance(it.get("@graph"), list) else [it]
                         for sub in sub_items:
-                            if isinstance(sub, dict) and "name" in sub:
-                                t = str(sub.get("@type", "")).lower()
-                                if any(k in t for k in ("business", "store", "organization", "local", "place")):
-                                    candidate_name = str(sub["name"]).strip()
-                                    if 2 <= len(candidate_name) <= 55:
-                                        json_ld_name = candidate_name
-                                        break
+                            if isinstance(sub, dict):
+                                if "@type" in sub:
+                                    json_ld_types.append(str(sub["@type"]))
+                                if "name" in sub and not json_ld_name:
+                                    t = str(sub.get("@type", "")).lower()
+                                    if any(k in t for k in ("business", "store", "organization", "local", "place")):
+                                        candidate_name = str(sub["name"]).strip()
+                                        if 2 <= len(candidate_name) <= 60:
+                                            json_ld_name = candidate_name
             except Exception:
                 pass
-        if json_ld_name:
-            break
 
     og_site = soup.find("meta", property=re.compile(r"^og:site_name$", re.I)) or soup.find("meta", attrs={"name": re.compile(r"^og:site_name$", re.I)})
     og_site_name = og_site["content"].strip() if (og_site and og_site.get("content")) else None
 
-    brand_name = resolve_brand_name(og_site_name, json_ld_name, raw_page_title, root_domain, city, state)
+    # Extract headings and meta description from root homepage
+    h1_h2_text = " ".join(h.get_text(" ", strip=True) for h in soup.find_all(["h1", "h2"]))
+    meta_desc_tag = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)}) or soup.find("meta", property=re.compile(r"^og:description$", re.I))
+    meta_desc = meta_desc_tag.get("content", "").strip() if (meta_desc_tag and meta_desc_tag.get("content")) else ""
 
-    # 2. Check Homepage for Phone & Email first
+    brand_name = resolve_brand_name(og_site_name, json_ld_name, raw_page_title, root_domain, city, state, country_name)
+
+    # 2. Semantic Category Relevance Gatekeeper (Rule 3)
+    if not check_category_relevance(
+        category=category,
+        brand_name=brand_name,
+        root_domain=root_domain,
+        homepage_title=raw_page_title,
+        meta_description=meta_desc,
+        headings=h1_h2_text,
+        json_ld_types=json_ld_types,
+        snippet_title=candidate.get("title", ""),
+        target_iso=country_iso,
+    ):
+        return None
+
+    # 3. Check Homepage for Phone & Email first
     homepage_text = soup.get_text(" ", strip=True)
     raw_phones: List[str] = []
     for a in soup.find_all("a", href=re.compile(r"^tel:", re.I)):
@@ -471,14 +811,14 @@ async def crawl_business_website(
     for a in soup.find_all("a", href=re.compile(r"^mailto:", re.I)):
         raw_emails.append(a["href"])
 
-    # If missing phone or email, crawl contact subpage quickly
+    # If missing phone or email, crawl contact subpage quickly (Contact info ONLY, never brand name)
     contact_html = ""
     if len(raw_phones) == 0 or len(raw_emails) == 0:
         contact_urls: List[str] = []
         for a in soup.find_all("a", href=True):
             href = a["href"].strip()
             lower_href = href.lower()
-            if any(w in lower_href for w in ["contact", "about", "connect", "location"]):
+            if any(w in lower_href for w in ["contact", "about", "connect", "location", "contatti", "kontakt"]):
                 if href.startswith("http"):
                     if urlparse(href).netloc == base_domain:
                         contact_urls.append(href)
@@ -504,31 +844,34 @@ async def crawl_business_website(
     combined_soup = BeautifulSoup(combined_html, "html.parser")
     combined_text = combined_soup.get_text(" ", strip=True)
 
-    # 3. Phone Verification & Entropy Gatekeeper
+    # 4. Strict Target-Country Phone Verification & Region Alignment (Rule 1)
     disp_phone: Optional[str] = None
     phone_e164: Optional[str] = None
+    verified_country_iso: Optional[str] = None
+
     for p in raw_phones:
-        e164, disp, _ = validate_and_format_phone(p, country_iso)
+        e164, disp, _, v_reg = validate_and_format_phone(p, country_iso, target_iso=country_iso)
         if e164:
             phone_e164 = e164
             disp_phone = disp
+            verified_country_iso = v_reg
             break
 
-    # Mandatory Contact Gatekeeper: Must have a valid phone number
+    # Immediately discard candidate websites whose phone belongs to a foreign country code
     if not disp_phone or not phone_e164:
         return None
 
-    # 4. Email Extraction & Strict RFC Sanitization
+    # 5. Email Extraction & Strict RFC Sanitization
     for em in re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', combined_text):
         raw_emails.append(em)
 
     ranked_emails = rank_emails(raw_emails)
     email = ranked_emails[0] if ranked_emails else ""
 
-    # 5. Instagram Extraction
+    # 6. Instagram Extraction
     ig_handle, ig_url = extract_instagram(combined_html, url)
 
-    # 6. Address Extraction
+    # 7. Address Extraction
     address = None
     for script in combined_soup.find_all("script", type="application/ld+json"):
         if script.string:
@@ -560,7 +903,7 @@ async def crawl_business_website(
     if not address:
         address = f"{city}, {country_name}"
 
-    # 7. Rating Extraction
+    # 8. Rating Extraction
     rating: Optional[float] = None
     for script in combined_soup.find_all("script", type="application/ld+json"):
         if script.string:
@@ -592,7 +935,7 @@ async def crawl_business_website(
         "website": url,
         "category": category.strip().title(),
         "city": city,
-        "country_code": country_iso,
+        "country_code": (verified_country_iso or country_iso).upper(),
         "source": "live_web",
     }
     return lead
@@ -654,6 +997,12 @@ async def extract_leads(
             if root_dom and root_dom in seen_domains:
                 continue
 
+            # Strict Target-Country Phone Alignment on Cached Leads (Rule 1)
+            e164, disp, _, v_reg = validate_and_format_phone(phone_e164, country_iso, target_iso=country_iso)
+            if not e164:
+                continue
+            raw_lead["country_code"] = (v_reg or country_iso).upper()
+
             seen_phones.add(phone_e164)
             if root_dom:
                 seen_domains.add(root_dom)
@@ -665,76 +1014,87 @@ async def extract_leads(
         if yielded_count >= total_target:
             break
 
-        # ── Tier 2: Live Search Discovery & Crawling ────────────────────────
-        query_loc = city_clean if "," in city_clean else f"{city_name} {state_name}".strip() or city_name
-        queries = [
-            f"{query_loc} {clean_cat} services",
-            f"{query_loc} custom {clean_cat}",
-            f"{query_loc} {clean_cat} showroom",
-            f"{query_loc} {clean_cat} official website",
-        ]
+        # ── Tier 2: Live Search Discovery & Crawling in Waves (Rule 4) ─────
+        districts = loc_profile.get("districts", [])
+        query_waves = generate_query_waves(
+            category=clean_cat,
+            city=city_name,
+            state=state_name,
+            country_iso=country_iso,
+            districts=districts,
+        )
 
         new_leads_for_cache: List[dict] = []
 
-        # Run search queries concurrently
-        search_tasks = [search_yahoo(q, max_pages=2) for q in queries]
-        search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
-
-        candidate_list: List[Dict[str, str]] = []
-        for res in search_results:
-            if isinstance(res, list):
-                for cand in res:
-                    root_dom = cand.get("root_domain") or extract_root_domain(cand["url"])
-                    if not root_dom or root_dom in seen_domains:
-                        continue
-                    candidate_list.append(cand)
-
-        if not candidate_list:
-            continue
-
         async with make_client(country_iso=country_iso, timeout=4.0) as client:
-            async def process_candidate(cand):
-                async with sem:
-                    return await crawl_business_website(
-                        client, cand, clean_cat, city_name, state_name, country_iso, country_name
-                    )
-
-            crawl_tasks = [process_candidate(cand) for cand in candidate_list]
-            crawl_results = await asyncio.gather(*crawl_tasks, return_exceptions=True)
-
-            for res in crawl_results:
+            for wave_queries in query_waves:
                 if yielded_count >= total_target:
                     break
-                if not isinstance(res, dict) or not res:
+
+                # Run search queries for this wave concurrently
+                search_tasks = [search_yahoo(q, max_pages=2) for q in wave_queries]
+                search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+                candidate_list: List[Dict[str, str]] = []
+                for res in search_results:
+                    if isinstance(res, list):
+                        for cand in res:
+                            root_dom = cand.get("root_domain") or extract_root_domain(cand["url"])
+                            if not root_dom or root_dom in seen_domains:
+                                continue
+                            candidate_list.append(cand)
+
+                if not candidate_list:
                     continue
 
-                phone_e164 = res.get("phone_e164")
-                root_dom = extract_root_domain(res.get("website", ""))
+                # Prioritize country-specific TLDs (Rule 4: .it, .fr, .de, .co.uk, .ae, etc.)
+                candidate_list.sort(
+                    key=lambda c: tld_priority_score(c["url"], country_iso),
+                    reverse=True,
+                )
 
-                # Strict Contact & Deduplication Gatekeeper
-                if not phone_e164 or phone_e164 in seen_phones:
-                    continue
-                if root_dom and root_dom in seen_domains:
-                    continue
+                async def process_candidate(cand):
+                    async with sem:
+                        return await crawl_business_website(
+                            client, cand, clean_cat, city_name, state_name, country_iso, country_name
+                        )
 
-                # Apply rating filter if lead has a rating
-                if star > 0 and res.get("rating") is not None:
-                    lead_r = float(res["rating"])
-                    if mode == "exact":
-                        if round(lead_r) != star:
-                            continue
-                    else:
-                        if not (max(1.0, star - 0.5) <= lead_r <= min(5.0, star + 0.5)):
-                            continue
+                crawl_tasks = [process_candidate(cand) for cand in candidate_list]
+                crawl_results = await asyncio.gather(*crawl_tasks, return_exceptions=True)
 
-                seen_phones.add(phone_e164)
-                if root_dom:
-                    seen_domains.add(root_dom)
+                for res in crawl_results:
+                    if yielded_count >= total_target:
+                        break
+                    if not isinstance(res, dict) or not res:
+                        continue
 
-                yielded_count += 1
-                new_leads_for_cache.append(res)
-                yield res
-                await asyncio.sleep(0.01)
+                    phone_e164 = res.get("phone_e164")
+                    root_dom = extract_root_domain(res.get("website", ""))
+
+                    # Strict Contact & Deduplication Gatekeeper
+                    if not phone_e164 or phone_e164 in seen_phones:
+                        continue
+                    if root_dom and root_dom in seen_domains:
+                        continue
+
+                    # Apply rating filter if lead has a rating
+                    if star > 0 and res.get("rating") is not None:
+                        lead_r = float(res["rating"])
+                        if mode == "exact":
+                            if round(lead_r) != star:
+                                continue
+                        else:
+                            if not (max(1.0, star - 0.5) <= lead_r <= min(5.0, star + 0.5)):
+                                continue
+
+                    seen_phones.add(phone_e164)
+                    if root_dom:
+                        seen_domains.add(root_dom)
+
+                    yielded_count += 1
+                    new_leads_for_cache.append(res)
+                    yield res
+                    await asyncio.sleep(0.01)
 
         # Persist newly verified genuine leads to cache
         if new_leads_for_cache:
