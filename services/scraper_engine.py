@@ -14,8 +14,11 @@ Data Hygiene & Deduplication Upgrades:
 from __future__ import annotations
 
 import asyncio
+import base64
+from collections import defaultdict
 import json
 import logging
+import random
 import re
 import time
 from pathlib import Path
@@ -25,6 +28,11 @@ from urllib.parse import urlparse, unquote
 import httpx
 from bs4 import BeautifulSoup
 import phonenumbers
+
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    DDGS = None
 
 from services.geocoder import (
     resolve_any_global_location,
@@ -642,61 +650,304 @@ def is_directory_or_junk(url: str, title: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Live Search Discovery via Yahoo Search
+# Multi-Engine Live Search Discovery (Yahoo, Bing, DDGS, Overpass)
 # ---------------------------------------------------------------------------
+
+USER_AGENTS: List[str] = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0",
+]
+
+# Staggered search concurrency to eliminate IP rate limits (Fix 4)
+SEARCH_SEMAPHORE = asyncio.Semaphore(4)
+
+
+def decode_bing_url(url: str, cite_text: str = "") -> str:
+    """Extract destination URL from Bing redirect or cite element."""
+    if not url:
+        return ""
+    if "bing.com/ck/a" in url:
+        m = re.search(r"[?&]u=([^&]+)", url)
+        if m:
+            raw = m.group(1)
+            if raw.startswith("a1"):
+                raw = raw[2:]
+            padded = raw + "=" * (-len(raw) % 4)
+            try:
+                dec = base64.urlsafe_b64decode(padded).decode("utf-8", errors="ignore")
+                if dec.startswith("http"):
+                    return dec
+            except Exception:
+                pass
+    if cite_text and cite_text.startswith("http"):
+        return cite_text.split(" › ")[0].strip()
+    return url
+
 
 async def search_yahoo(query: str, max_pages: int = 2) -> List[Dict[str, str]]:
     """
-    Scrape Yahoo Search for genuine organic business websites.
-    Filters out ads (aclick), directories, editorial paths, and blogs.
+    Scrape Yahoo Search for organic business results with RU redirect decoding.
+    Captures search snippet for fallback phone/contact enrichment (Fix 3).
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
     candidates: List[Dict[str, str]] = []
-    seen_domains: Set[str] = set()
+    seen_urls: Set[str] = set()
 
-    try:
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=5.0) as client:
-            for page in range(max_pages):
-                start = page * 10 + 1
-                resp = await client.get("https://search.yahoo.com/search", params={"p": query, "b": start})
-                if resp.status_code != 200:
-                    break
+    async with SEARCH_SEMAPHORE:
+        await asyncio.sleep(random.uniform(0.15, 0.35))
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=5.0) as client:
+                for page in range(max_pages):
+                    start = page * 10 + 1
+                    resp = await client.get("https://search.yahoo.com/search", params={"p": query, "b": start})
+                    if resp.status_code != 200:
+                        break
 
-                soup = BeautifulSoup(resp.text, "html.parser")
-                for div in soup.find_all("div", class_="compTitle"):
-                    h3 = div.find("h3")
-                    a = div.find("a", href=True)
-                    if not h3 or not a:
-                        continue
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for div in soup.find_all("div", class_="compTitle"):
+                        h3 = div.find("h3")
+                        a = div.find("a", href=True)
+                        if not h3 or not a:
+                            continue
 
-                    title = h3.get_text(strip=True)
-                    raw_url = a["href"]
-                    url = decode_yahoo_url(raw_url)
+                        title = h3.get_text(strip=True)
+                        raw_url = a["href"]
+                        url = decode_yahoo_url(raw_url)
 
-                    if not url.startswith("http") or "aclick" in url:
-                        continue
-                    if is_directory_or_junk(url, title):
-                        continue
+                        if not url.startswith("http") or "aclick" in url or "yahoo.com" in url:
+                            continue
+                        if is_directory_or_junk(url, title):
+                            continue
 
-                    root_dom = extract_root_domain(url)
-                    if not root_dom or root_dom in seen_domains:
-                        continue
-                    seen_domains.add(root_dom)
+                        root_dom = extract_root_domain(url)
+                        if not root_dom:
+                            continue
 
-                    candidates.append({
-                        "title": title,
-                        "url": url,
-                        "root_domain": root_dom,
-                    })
-                await asyncio.sleep(0.02)
-    except Exception as exc:
-        logger.debug("Yahoo search error for query '%s': %s", query, exc)
+                        parent = div.find_parent("li") or div.parent
+                        snippet_el = parent.find("div", class_="compText") or parent.find("p") if parent else None
+                        snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
+
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            candidates.append({
+                                "title": title,
+                                "url": url,
+                                "snippet": snippet,
+                                "root_domain": root_dom,
+                            })
+                    await asyncio.sleep(0.05)
+        except Exception as exc:
+            logger.debug("Yahoo search error for query '%s': %s", query, exc)
 
     return candidates
+
+
+async def search_bing(query: str, max_pages: int = 2) -> List[Dict[str, str]]:
+    """
+    Scrape Bing Search for organic business results with base64 redirect decoding.
+    Captures search snippet for fallback phone/contact enrichment (Fix 3 & Fix 4).
+    """
+    candidates: List[Dict[str, str]] = []
+    seen_urls: Set[str] = set()
+
+    async with SEARCH_SEMAPHORE:
+        await asyncio.sleep(random.uniform(0.15, 0.35))
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=5.0) as client:
+                for page in range(max_pages):
+                    start = page * 10 + 1
+                    resp = await client.get("https://www.bing.com/search", params={"q": query, "first": start})
+                    if resp.status_code != 200:
+                        break
+
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for li in soup.find_all("li", class_="b_algo"):
+                        h2 = li.find("h2")
+                        a = h2.find("a", href=True) if h2 else None
+                        if not a:
+                            continue
+                        cite = li.find("cite")
+                        cite_text = cite.get_text(strip=True) if cite else ""
+                        raw_url = a["href"]
+                        url = decode_bing_url(raw_url, cite_text)
+
+                        if not url.startswith("http") or "bing.com" in url:
+                            continue
+                        title = a.get_text(strip=True)
+                        if is_directory_or_junk(url, title):
+                            continue
+
+                        root_dom = extract_root_domain(url)
+                        if not root_dom:
+                            continue
+
+                        snippet_el = li.find("p") or li.find("div", class_="b_caption")
+                        snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
+
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            candidates.append({
+                                "title": title,
+                                "url": url,
+                                "snippet": snippet,
+                                "root_domain": root_dom,
+                            })
+                    await asyncio.sleep(0.05)
+        except Exception as exc:
+            logger.debug("Bing search error for query '%s': %s", query, exc)
+
+    return candidates
+
+
+async def search_ddg(query: str, max_results: int = 15) -> List[Dict[str, str]]:
+    """Query DuckDuckGo for organic business results (Fix 4)."""
+    candidates: List[Dict[str, str]] = []
+    if not DDGS:
+        return candidates
+
+    async with SEARCH_SEMAPHORE:
+        await asyncio.sleep(random.uniform(0.15, 0.35))
+        try:
+            loop = asyncio.get_running_loop()
+            def do_ddg():
+                with DDGS() as ddgs:
+                    return list(ddgs.text(query, max_results=max_results))
+            results = await loop.run_in_executor(None, do_ddg)
+            for r in results:
+                url = r.get("href", "")
+                title = r.get("title", "")
+                snippet = r.get("body", "")
+                if not url.startswith("http") or is_directory_or_junk(url, title):
+                    continue
+                root_dom = extract_root_domain(url)
+                if not root_dom:
+                    continue
+                candidates.append({
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                    "root_domain": root_dom,
+                })
+        except Exception as exc:
+            logger.debug("DDGS search error for '%s': %s", query, exc)
+
+    return candidates
+
+
+async def search_overpass_spatial(
+    category: str,
+    lat: float,
+    lon: float,
+    city: str,
+    country_iso: str,
+    country_name: str,
+) -> Tuple[List[dict], List[Dict[str, str]]]:
+    """
+    Direct Spatial Node Discovery via OpenStreetMap Overpass (Fix 3 & Fix 4).
+    Emits spatial nodes with valid target-country phones directly as verified leads,
+    and returns candidates with websites for supplemental crawling.
+    """
+    if lat == 0.0 and lon == 0.0:
+        return [], []
+
+    direct_leads: List[dict] = []
+    candidate_urls: List[Dict[str, str]] = []
+
+    clean_cat = category.strip()
+    words = [w for w in re.findall(r"[a-zA-Z\u00C0-\u017F]+", clean_cat) if len(w) >= 3]
+    cat_pattern = "|".join(words) if words else clean_cat
+
+    query = f"""[out:json][timeout:4];
+(
+  node["shop"](around:20000,{lat},{lon});
+  node["name"~"{cat_pattern}",i](around:20000,{lat},{lon});
+  way["name"~"{cat_pattern}",i](around:20000,{lat},{lon});
+);
+out center 100 tags;
+"""
+    endpoints = [
+        "https://overpass.private.coffee/api/interpreter",
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+    ]
+    headers = {
+        "User-Agent": "BigLeaguesLeadExtractor/2.0",
+        "Accept": "application/json, */*",
+    }
+
+    async with SEARCH_SEMAPHORE:
+        try:
+            async with httpx.AsyncClient(headers=headers, timeout=3.5) as client:
+                for ep in endpoints:
+                    try:
+                        resp = await client.post(ep, data={"data": query})
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            for el in data.get("elements", []):
+                                tags = el.get("tags", {})
+                                name = tags.get("name") or tags.get("name:en")
+                                if not name or len(name.strip()) < 3:
+                                    continue
+                                phone_raw = (
+                                    tags.get("phone")
+                                    or tags.get("contact:phone")
+                                    or tags.get("contact:mobile")
+                                    or tags.get("mobile")
+                                    or ""
+                                )
+                                website = tags.get("website") or tags.get("contact:website") or ""
+                                email = tags.get("email") or tags.get("contact:email") or ""
+
+                                addr_parts = [tags[k] for k in ("addr:housenumber", "addr:street", "addr:suburb", "addr:postcode") if tags.get(k)]
+                                address = ", ".join(addr_parts) if addr_parts else f"{city}, {country_name}"
+
+                                if phone_raw:
+                                    e164, disp, _, v_reg = validate_and_format_phone(phone_raw, country_iso, target_iso=country_iso)
+                                    if e164:
+                                        direct_leads.append({
+                                            "name": name.strip(),
+                                            "address": address,
+                                            "rating": None,
+                                            "phone": disp,
+                                            "phone_e164": e164,
+                                            "email": email.lower().strip() if email else "",
+                                            "instagram_handle": None,
+                                            "instagram_url": None,
+                                            "website": website if website.startswith("http") else "",
+                                            "category": clean_cat.title(),
+                                            "city": city,
+                                            "country_code": (v_reg or country_iso).upper(),
+                                            "source": "osm_spatial",
+                                        })
+                                elif website and website.startswith("http") and not is_directory_or_junk(website, name):
+                                    root_dom = extract_root_domain(website)
+                                    if root_dom:
+                                        candidate_urls.append({
+                                            "title": name.strip(),
+                                            "url": website,
+                                            "snippet": "",
+                                            "root_domain": root_dom,
+                                        })
+                            if direct_leads or candidate_urls:
+                                break
+                    except Exception:
+                        continue
+        except Exception as exc:
+            logger.debug("Overpass query error: %s", exc)
+
+    return direct_leads, candidate_urls
 
 
 # ---------------------------------------------------------------------------
@@ -715,7 +966,8 @@ async def crawl_business_website(
     """
     Crawl business website homepage and contact subpage.
     Extracts brand name, verified phone (E.164), real email, real Instagram.
-    Returns None if website is unreachable, is an article/directory, or lacks a callable phone.
+    Implements search snippet pre-extraction fallback on HTTP errors/timeouts (Fix 3).
+    Relies on negative filtering without arbitrary title stem rejection (Fix 1).
     """
     url = candidate["url"]
     root_domain = candidate.get("root_domain") or extract_root_domain(url)
@@ -728,12 +980,47 @@ async def crawl_business_website(
     if PUBLIC_SECTOR_JUNK_PATTERNS.search(url):
         return None
 
+    html = ""
     try:
         resp = await client.get(url, timeout=httpx.Timeout(3.2, connect=1.8, read=2.5))
-        if resp.status_code >= 400:
-            return None
-        html = resp.text[:1_000_000]
+        if resp.status_code < 400:
+            html = resp.text[:1_000_000]
     except Exception:
+        html = ""
+
+    # Search Snippet Pre-Extraction Fallback (Fix 3)
+    # If website blocked, timed out, or returned an error, extract phone from search snippet
+    if not html:
+        snippet = candidate.get("snippet", "")
+        if snippet:
+            raw_snippet_phones = []
+            try:
+                for match in phonenumbers.PhoneNumberMatcher(snippet, country_iso):
+                    raw_snippet_phones.append(phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164))
+            except Exception:
+                pass
+            for p in raw_snippet_phones:
+                e164, disp, _, v_reg = validate_and_format_phone(p, country_iso, target_iso=country_iso)
+                if e164:
+                    brand_name = resolve_brand_name(None, None, candidate.get("title", ""), root_domain, city, state, country_name)
+                    em_matches = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', snippet)
+                    ranked = rank_emails(em_matches)
+                    email = ranked[0] if ranked else ""
+                    return {
+                        "name": brand_name,
+                        "address": f"{city}, {country_name}",
+                        "rating": None,
+                        "phone": disp,
+                        "phone_e164": e164,
+                        "email": email,
+                        "instagram_handle": None,
+                        "instagram_url": None,
+                        "website": url,
+                        "category": category.strip().title(),
+                        "city": city,
+                        "country_code": (v_reg or country_iso).upper(),
+                        "source": "snippet_discovery",
+                    }
         return None
 
     soup = BeautifulSoup(html, "html.parser")
@@ -774,28 +1061,9 @@ async def crawl_business_website(
     og_site = soup.find("meta", property=re.compile(r"^og:site_name$", re.I)) or soup.find("meta", attrs={"name": re.compile(r"^og:site_name$", re.I)})
     og_site_name = og_site["content"].strip() if (og_site and og_site.get("content")) else None
 
-    # Extract headings and meta description from root homepage
-    h1_h2_text = " ".join(h.get_text(" ", strip=True) for h in soup.find_all(["h1", "h2"]))
-    meta_desc_tag = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)}) or soup.find("meta", property=re.compile(r"^og:description$", re.I))
-    meta_desc = meta_desc_tag.get("content", "").strip() if (meta_desc_tag and meta_desc_tag.get("content")) else ""
-
     brand_name = resolve_brand_name(og_site_name, json_ld_name, raw_page_title, root_domain, city, state, country_name)
 
-    # 2. Semantic Category Relevance Gatekeeper (Rule 3)
-    if not check_category_relevance(
-        category=category,
-        brand_name=brand_name,
-        root_domain=root_domain,
-        homepage_title=raw_page_title,
-        meta_description=meta_desc,
-        headings=h1_h2_text,
-        json_ld_types=json_ld_types,
-        snippet_title=candidate.get("title", ""),
-        target_iso=country_iso,
-    ):
-        return None
-
-    # 3. Check Homepage for Phone & Email first
+    # 2. Check Homepage for Phone & Email first
     homepage_text = soup.get_text(" ", strip=True)
     raw_phones: List[str] = []
     for a in soup.find_all("a", href=re.compile(r"^tel:", re.I)):
@@ -844,7 +1112,7 @@ async def crawl_business_website(
     combined_soup = BeautifulSoup(combined_html, "html.parser")
     combined_text = combined_soup.get_text(" ", strip=True)
 
-    # 4. Strict Target-Country Phone Verification & Region Alignment (Rule 1)
+    # 3. Strict Target-Country Phone Verification & Region Alignment (Rule 1)
     disp_phone: Optional[str] = None
     phone_e164: Optional[str] = None
     verified_country_iso: Optional[str] = None
@@ -856,6 +1124,22 @@ async def crawl_business_website(
             disp_phone = disp
             verified_country_iso = v_reg
             break
+
+    # Snippet Fallback if page had no phone link/text (Fix 3)
+    if not disp_phone or not phone_e164:
+        snippet = candidate.get("snippet", "")
+        if snippet:
+            try:
+                for match in phonenumbers.PhoneNumberMatcher(snippet, country_iso):
+                    raw_p = phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164)
+                    e164, disp, _, v_reg = validate_and_format_phone(raw_p, country_iso, target_iso=country_iso)
+                    if e164:
+                        phone_e164 = e164
+                        disp_phone = disp
+                        verified_country_iso = v_reg
+                        break
+            except Exception:
+                pass
 
     # Immediately discard candidate websites whose phone belongs to a foreign country code
     if not disp_phone or not phone_e164:
@@ -956,9 +1240,10 @@ async def extract_leads(
     100% Genuine async generator for the Global B2B Lead Extractor.
     Streams verified real leads discovered live from the web.
     Guarantees:
-      - Root-domain deduplication (exactly 1 lead per domain).
+      - Multi-branch retention (up to 5 leads per root domain with distinct branches).
       - Phone deduplication (exactly 1 lead per E.164 phone).
-      - 100% callable phone coverage.
+      - Normalized (business_name, street_address) identity deduplication.
+      - 100% callable phone coverage aligned with target telecom country.
       - Never emits synthetic data.
     """
     clean_cat = category.strip()
@@ -966,8 +1251,10 @@ async def extract_leads(
     total_target = max(5, min(volume, 1000))
 
     yielded_count = 0
-    seen_domains: Set[str] = set()
+    domain_crawl_counts: Dict[str, int] = defaultdict(int)
     seen_phones: Set[str] = set()
+    seen_identities: Set[Tuple[str, str]] = set()
+    seen_urls: Set[str] = set()
 
     sem = asyncio.Semaphore(30)
 
@@ -981,6 +1268,8 @@ async def extract_leads(
         country_name = loc_profile["country_name"]
         city_name = loc_profile["city"]
         state_name = loc_profile.get("state", "")
+        lat = float(loc_profile.get("lat") or 0.0)
+        lon = float(loc_profile.get("lon") or 0.0)
 
         # ── Tier 1: Check Genuine Cache First ──────────────────────────────
         cached = get_cached_leads_for_city(clean_cat, city_clean)
@@ -994,7 +1283,13 @@ async def extract_leads(
             root_dom = extract_root_domain(raw_lead.get("website", ""))
             if not phone_e164 or phone_e164 in seen_phones:
                 continue
-            if root_dom and root_dom in seen_domains:
+            if root_dom and domain_crawl_counts[root_dom] >= 5:
+                continue
+
+            norm_name = re.sub(r"\W+", "", raw_lead.get("name", "").lower())
+            norm_addr = re.sub(r"\W+", "", raw_lead.get("address", "").lower())
+            identity_key = (norm_name, norm_addr)
+            if norm_name and norm_addr and identity_key in seen_identities:
                 continue
 
             # Strict Target-Country Phone Alignment on Cached Leads (Rule 1)
@@ -1004,8 +1299,10 @@ async def extract_leads(
             raw_lead["country_code"] = (v_reg or country_iso).upper()
 
             seen_phones.add(phone_e164)
+            if norm_name and norm_addr:
+                seen_identities.add(identity_key)
             if root_dom:
-                seen_domains.add(root_dom)
+                domain_crawl_counts[root_dom] += 1
 
             yielded_count += 1
             yield raw_lead
@@ -1014,7 +1311,54 @@ async def extract_leads(
         if yielded_count >= total_target:
             break
 
-        # ── Tier 2: Live Search Discovery & Crawling in Waves (Rule 4) ─────
+        # ── Tier 2A: OpenStreetMap Overpass Spatial Discovery (Fix 3) ─────
+        new_leads_for_cache: List[dict] = []
+        osm_cands: List[Dict[str, str]] = []
+
+        if lat != 0.0 and lon != 0.0:
+            try:
+                osm_leads, osm_cands = await search_overpass_spatial(
+                    clean_cat, lat, lon, city_name, country_iso, country_name
+                )
+                for ol in osm_leads:
+                    if yielded_count >= total_target:
+                        break
+                    phone_e164 = ol.get("phone_e164")
+                    if not phone_e164 or phone_e164 in seen_phones:
+                        continue
+
+                    norm_name = re.sub(r"\W+", "", ol.get("name", "").lower())
+                    norm_addr = re.sub(r"\W+", "", ol.get("address", "").lower())
+                    identity_key = (norm_name, norm_addr)
+                    if norm_name and norm_addr and identity_key in seen_identities:
+                        continue
+
+                    root_dom = extract_root_domain(ol.get("website", ""))
+                    if root_dom and domain_crawl_counts[root_dom] >= 5:
+                        continue
+
+                    seen_phones.add(phone_e164)
+                    if norm_name and norm_addr:
+                        seen_identities.add(identity_key)
+                    if root_dom:
+                        domain_crawl_counts[root_dom] += 1
+
+                    yielded_count += 1
+                    new_leads_for_cache.append(ol)
+                    yield ol
+                    await asyncio.sleep(0.01)
+            except Exception as exc:
+                logger.debug("Overpass spatial discovery error: %s", exc)
+
+        if yielded_count >= total_target:
+            if new_leads_for_cache:
+                try:
+                    save_to_cache(clean_cat, city_clean, new_leads_for_cache)
+                except Exception as exc:
+                    logger.debug("Cache auto-save error: %s", exc)
+            break
+
+        # ── Tier 2B: Multi-Engine Search Discovery & Deep Crawl in Waves (Fix 4) ─
         districts = loc_profile.get("districts", [])
         query_waves = generate_query_waves(
             category=clean_cat,
@@ -1024,24 +1368,46 @@ async def extract_leads(
             districts=districts,
         )
 
-        new_leads_for_cache: List[dict] = []
-
         async with make_client(country_iso=country_iso, timeout=4.0) as client:
             for wave_queries in query_waves:
                 if yielded_count >= total_target:
                     break
 
-                # Run search queries for this wave concurrently
-                search_tasks = [search_yahoo(q, max_pages=2) for q in wave_queries]
+                # Fan out search queries across Yahoo, Bing, and DDG simultaneously (Fix 4)
+                search_tasks = []
+                for q in wave_queries:
+                    search_tasks.append(search_yahoo(q, max_pages=2))
+                    search_tasks.append(search_bing(q, max_pages=2))
+                    if DDGS:
+                        search_tasks.append(search_ddg(q, max_results=15))
+
                 search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
                 candidate_list: List[Dict[str, str]] = []
+
+                # Include any uncrawled OSM candidates on the first wave
+                if osm_cands:
+                    for oc in osm_cands:
+                        url = oc.get("url", "")
+                        if not url or url in seen_urls:
+                            continue
+                        root_dom = oc.get("root_domain") or extract_root_domain(url)
+                        if not root_dom or domain_crawl_counts[root_dom] >= 5:
+                            continue
+                        seen_urls.add(url)
+                        candidate_list.append(oc)
+                    osm_cands = []
+
                 for res in search_results:
                     if isinstance(res, list):
                         for cand in res:
-                            root_dom = cand.get("root_domain") or extract_root_domain(cand["url"])
-                            if not root_dom or root_dom in seen_domains:
+                            url = cand.get("url", "")
+                            if not url or url in seen_urls:
                                 continue
+                            root_dom = cand.get("root_domain") or extract_root_domain(url)
+                            if not root_dom or domain_crawl_counts[root_dom] >= 5:
+                                continue
+                            seen_urls.add(url)
                             candidate_list.append(cand)
 
                 if not candidate_list:
@@ -1071,10 +1437,16 @@ async def extract_leads(
                     phone_e164 = res.get("phone_e164")
                     root_dom = extract_root_domain(res.get("website", ""))
 
-                    # Strict Contact & Deduplication Gatekeeper
+                    # Strict Contact & Multi-Branch Gatekeeper (Fix 2)
                     if not phone_e164 or phone_e164 in seen_phones:
                         continue
-                    if root_dom and root_dom in seen_domains:
+                    if root_dom and domain_crawl_counts[root_dom] >= 5:
+                        continue
+
+                    norm_name = re.sub(r"\W+", "", res.get("name", "").lower())
+                    norm_addr = re.sub(r"\W+", "", res.get("address", "").lower())
+                    identity_key = (norm_name, norm_addr)
+                    if norm_name and norm_addr and identity_key in seen_identities:
                         continue
 
                     # Apply rating filter if lead has a rating
@@ -1088,8 +1460,10 @@ async def extract_leads(
                                 continue
 
                     seen_phones.add(phone_e164)
+                    if norm_name and norm_addr:
+                        seen_identities.add(identity_key)
                     if root_dom:
-                        seen_domains.add(root_dom)
+                        domain_crawl_counts[root_dom] += 1
 
                     yielded_count += 1
                     new_leads_for_cache.append(res)
