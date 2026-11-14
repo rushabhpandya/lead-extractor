@@ -388,16 +388,26 @@ function appendRow(lead) {
        </a>`
     : '<span class="empty-field">—</span>';
 
-  // Phone badge: show country prefix dynamically
+  // Phone badge: clean country ISO code
   const phoneStr = esc(lead.phone || '');
-  const phoneBadge = (() => {
-    if (!phoneStr) return '';
-    if (phoneStr.startsWith('+91')) return '+91';
-    if (phoneStr.startsWith('+44')) return '+44';
-    if (phoneStr.startsWith('+1'))  return '+1';
-    if (phoneStr.startsWith('+33')) return '+33';
-    if (phoneStr.startsWith('+971')) return '+971';
-    if (phoneStr.startsWith('+')) return phoneStr.slice(0, phoneStr.indexOf(' ') > 0 ? phoneStr.indexOf(' ') : 4);
+  const countryBadge = (() => {
+    if (lead.country_code) return esc(lead.country_code.toUpperCase());
+    if (phoneStr.startsWith('+91')) return 'IN';
+    if (phoneStr.startsWith('+44')) return 'GB';
+    if (phoneStr.startsWith('+1'))  return 'US';
+    if (phoneStr.startsWith('+33')) return 'FR';
+    if (phoneStr.startsWith('+41')) return 'CH';
+    if (phoneStr.startsWith('+971')) return 'AE';
+    if (phoneStr.startsWith('+81')) return 'JP';
+    if (phoneStr.startsWith('+65')) return 'SG';
+    if (phoneStr.startsWith('+61')) return 'AU';
+    if (phoneStr.startsWith('+49')) return 'DE';
+    if (phoneStr.startsWith('+39')) return 'IT';
+    if (phoneStr.startsWith('+34')) return 'ES';
+    if (phoneStr.startsWith('+')) {
+      const match = phoneStr.match(/^\+(\d{1,3})/);
+      return match ? `+${match[1]}` : '';
+    }
     return '';
   })();
 
@@ -423,7 +433,7 @@ function appendRow(lead) {
     <td class="col-rating">${ratingHTML}</td>
     <td class="col-phone">
       <div class="phone-wrap">
-        ${phoneBadge ? `<span class="phone-badge">${phoneBadge}</span>` : ''}
+        ${countryBadge ? `<span class="phone-badge">${countryBadge}</span>` : ''}
         <span class="phone-val">${phoneStr}</span>
         <button class="phone-copy-btn" title="Copy number" data-phone="${phoneStr}">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">

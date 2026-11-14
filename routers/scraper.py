@@ -79,7 +79,7 @@ async def api_extract(
                 delivered += 1
                 payload = json.dumps({"type": "lead", "data": lead})
                 yield f"data: {payload}\n\n"
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0)
 
             elapsed = round(time.time() - start_ts, 1)
             done_payload = json.dumps({

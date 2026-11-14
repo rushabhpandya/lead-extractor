@@ -1238,12 +1238,30 @@ td.col-website {
   max-width: 150px;
 }
 
-/* ── Wider table scroll for 8-column layout ──────────────────── */
+/* ── Wider table scroll for 8-column layout with fixed column percentages ── */
 .table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  max-height: calc(100vh - 380px);
+}
+
+#leads-table {
+  table-layout: fixed;
+  width: 100%;
   min-width: 900px;
 }
 
-#leads-table th,
+#leads-table th:nth-child(1), #leads-table td:nth-child(1) { width: 4%; }
+#leads-table th:nth-child(2), #leads-table td:nth-child(2) { width: 20%; }
+#leads-table th:nth-child(3), #leads-table td:nth-child(3) { width: 18%; }
+#leads-table th:nth-child(4), #leads-table td:nth-child(4) { width: 9%; }
+#leads-table th:nth-child(5), #leads-table td:nth-child(5) { width: 15%; }
+#leads-table th:nth-child(6), #leads-table td:nth-child(6) { width: 16%; }
+#leads-table th:nth-child(7), #leads-table td:nth-child(7) { width: 12%; }
+#leads-table th:nth-child(8), #leads-table td:nth-child(8) { width: 6%; }
+
 #leads-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
