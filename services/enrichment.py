@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import logging
 from typing import Optional, List, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 try:
     import phonenumbers
@@ -25,6 +25,42 @@ logger = logging.getLogger("enrichment")
 
 # India TRAI fallback (when phonenumbers not available)
 _INDIA_MOBILE_RE = re.compile(r'^(?:[789]\d{9}|6(?:0[0-9]\d{7}|[23]\d{8}))$')
+
+# Strict RFC email regex
+STRICT_EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,12}$')
+
+# Sequential and repetitive sequences for entropy rejection
+ASC_SEQS = ("012345", "123456", "234567", "345678", "456789", "567890")
+DESC_SEQS = ("987654", "876543", "765432", "654321", "543210")
+
+
+def is_dummy_or_low_entropy_phone(nsn: str, country_code: int = 0) -> bool:
+    """
+    Check if a national significant number (digits only) is a placeholder, dummy,
+    or fictional template number.
+    """
+    digits = re.sub(r"\D", "", nsn)
+    if len(digits) < 6:
+        return True
+
+    # 1. 6 or more identical consecutive digits (e.g. 000000, 999999, 111111)
+    if re.search(r"(\d)\1{5,}", digits):
+        return True
+
+    # 2. Ascending or descending sequential runs of 6 or more digits
+    if any(seq in digits for seq in ASC_SEQS) or any(seq in digits for seq in DESC_SEQS):
+        return True
+
+    # 3. North American (NANP, country_code=1) 555 fictional exchanges
+    if country_code == 1:
+        if len(digits) == 10 and digits[3:6] == "555":
+            return True
+        elif len(digits) == 11 and digits.startswith("1") and digits[4:7] == "555":
+            return True
+        elif digits.startswith("555"):
+            return True
+
+    return False
 
 # Raw phone extraction pattern — matches international and local formats
 _PHONE_EXTRACT_RE = re.compile(
@@ -100,6 +136,9 @@ def validate_and_format_phone(
             try:
                 parsed = phonenumbers.parse(attempt, default_region)
                 if phonenumbers.is_valid_number(parsed):
+                    nsn = str(parsed.national_number)
+                    if is_dummy_or_low_entropy_phone(nsn, parsed.country_code):
+                        continue
                     e164 = phonenumbers.format_number(
                         parsed, phonenumbers.PhoneNumberFormat.E164
                     )
@@ -121,7 +160,7 @@ def validate_and_format_phone(
     digits = re.sub(r"\D", "", cleaned)
     if digits.startswith("91") and len(digits) == 12:
         digits = digits[2:]
-    if _INDIA_MOBILE_RE.match(digits):
+    if _INDIA_MOBILE_RE.match(digits) and not is_dummy_or_low_entropy_phone(digits, 91):
         display = f"+91 {digits[:5]} {digits[5:]}"
         return f"+91{digits}", display, True
     return None, None, False
@@ -166,8 +205,37 @@ _EMAIL_PRIORITY = [
 ]
 
 
+def clean_and_validate_email(raw_email: str) -> Optional[str]:
+    """
+    URL-decode, sanitize, and strictly validate email against RFC syntax.
+    Strips URL-encoded prefixes (%20, %0A), mailto: prefixes, and parameters.
+    """
+    if not raw_email:
+        return None
+    unquoted = unquote(raw_email).strip()
+    if unquoted.lower().startswith("mailto:"):
+        unquoted = unquoted[7:].strip()
+    unquoted = re.split(r"[?&]", unquoted)[0].strip()
+    unquoted = unquoted.strip(" \t\n\r'\"<>(),;:")
+    if not STRICT_EMAIL_RE.match(unquoted):
+        return None
+    if re.search(r"\.(png|jpg|jpeg|gif|svg|webp|css|js|woff|woff2)$", unquoted, re.I):
+        return None
+    if any(ign in unquoted.lower() for ign in ["sentry", "cloudflare", "wixpress", "example.com", "domain.com", "email.com"]):
+        return None
+    return unquoted.lower()
+
+
 def rank_emails(emails: List[str]) -> List[str]:
-    """Return emails sorted by business-relevance priority."""
+    """Sanitize, validate, and return emails sorted by business-relevance priority."""
+    valid_cleaned: List[str] = []
+    seen = set()
+    for em in emails:
+        clean = clean_and_validate_email(em)
+        if clean and clean not in seen:
+            seen.add(clean)
+            valid_cleaned.append(clean)
+
     def _score(email: str) -> int:
         local = email.split("@")[0].lower()
         for idx, prefix in enumerate(_EMAIL_PRIORITY):
@@ -175,7 +243,7 @@ def rank_emails(emails: List[str]) -> List[str]:
                 return idx
         return len(_EMAIL_PRIORITY)
 
-    return sorted(set(emails), key=_score)
+    return sorted(valid_cleaned, key=_score)
 
 
 # ---------------------------------------------------------------------------

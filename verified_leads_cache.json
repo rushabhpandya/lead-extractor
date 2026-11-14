@@ -1,7 +1,7 @@
 {
   "carpenter|austin, tx": [
     {
-      "name": "Austin",
+      "name": "Custom Carpentry",
       "address": "Austin, United States",
       "rating": null,
       "phone": "+1 936-707-9716",
@@ -93,7 +93,7 @@
       "source": "live_web"
     },
     {
-      "name": "Bentley &amp; Skinner",
+      "name": "Bentley & Skinner",
       "address": "London, United Kingdom",
       "rating": null,
       "phone": "+44 20 7629 0651",
@@ -123,7 +123,7 @@
       "source": "live_web"
     },
     {
-      "name": "MAYFAIR, LONDON",
+      "name": "Christopher Ward",
       "address": "London, United Kingdom",
       "rating": null,
       "phone": "+1 877-380-2288",

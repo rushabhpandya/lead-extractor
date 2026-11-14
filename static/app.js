@@ -42,6 +42,9 @@ const emptyState    = $('empty-state');
 const exportBtns    = $('export-btns');
 const valLeads      = $('val-leads');
 const valEmails     = $('val-emails');
+const valPhones     = $('val-phones');
+const valPhoneTag   = $('val-phone-tag');
+const valPhoneSub   = $('val-phone-sub');
 const valElapsed    = $('val-elapsed');
 const statSpinner   = $('stat-spinner');
 const modeHint      = $('mode-hint');
@@ -201,6 +204,9 @@ function startExtraction() {
   progressFill.style.width = '0%';
   valLeads.textContent   = '0';
   valEmails.textContent  = '0';
+  if (valPhones)   valPhones.textContent   = '100%';
+  if (valPhoneTag) valPhoneTag.textContent = '100%';
+  if (valPhoneSub) valPhoneSub.textContent = '100% Verified';
   valElapsed.textContent = '0.0s';
   statSpinner.style.display = '';
 
@@ -260,8 +266,13 @@ function handleMessage(msg, volume, es, myRunId) {
     appendRow(lead);
 
     const emailCount = state.leads.filter(l => l.email && l.email.length > 0).length;
+    const phoneCount = state.leads.filter(l => l.phone && l.phone.trim().length > 0).length;
+    const phonePct = state.leads.length > 0 ? Math.round((phoneCount / state.leads.length) * 100) : 100;
     valLeads.textContent  = state.leads.length;
     valEmails.textContent = emailCount;
+    if (valPhones)   valPhones.textContent   = `${phonePct}%`;
+    if (valPhoneTag) valPhoneTag.textContent = `${phonePct}%`;
+    if (valPhoneSub) valPhoneSub.textContent = `${phoneCount}/${state.leads.length} Callable`;
 
     if (gridCounter) {
       gridCounter.textContent = `${state.leads.length} loaded`;
@@ -388,28 +399,44 @@ function appendRow(lead) {
        </a>`
     : '<span class="empty-field">—</span>';
 
-  // Phone badge: clean country ISO code
-  const phoneStr = esc(lead.phone || '');
-  const countryBadge = (() => {
-    if (lead.country_code) return esc(lead.country_code.toUpperCase());
-    if (phoneStr.startsWith('+91')) return 'IN';
-    if (phoneStr.startsWith('+44')) return 'GB';
-    if (phoneStr.startsWith('+1'))  return 'US';
-    if (phoneStr.startsWith('+33')) return 'FR';
-    if (phoneStr.startsWith('+41')) return 'CH';
-    if (phoneStr.startsWith('+971')) return 'AE';
-    if (phoneStr.startsWith('+81')) return 'JP';
-    if (phoneStr.startsWith('+65')) return 'SG';
-    if (phoneStr.startsWith('+61')) return 'AU';
-    if (phoneStr.startsWith('+49')) return 'DE';
-    if (phoneStr.startsWith('+39')) return 'IT';
-    if (phoneStr.startsWith('+34')) return 'ES';
-    if (phoneStr.startsWith('+')) {
-      const match = phoneStr.match(/^\+(\d{1,3})/);
-      return match ? `+${match[1]}` : '';
-    }
-    return '';
-  })();
+  // Phone badge & cell formatting
+  const rawPhone = (lead.phone || '').trim();
+  let phoneCellHTML = '<span class="empty-field">—</span>';
+  if (rawPhone) {
+    const phoneStr = esc(rawPhone);
+    const countryBadge = (() => {
+      if (lead.country_code) return esc(lead.country_code.toUpperCase());
+      if (rawPhone.startsWith('+91')) return 'IN';
+      if (rawPhone.startsWith('+44')) return 'GB';
+      if (rawPhone.startsWith('+1'))  return 'US';
+      if (rawPhone.startsWith('+33')) return 'FR';
+      if (rawPhone.startsWith('+41')) return 'CH';
+      if (rawPhone.startsWith('+971')) return 'AE';
+      if (rawPhone.startsWith('+81')) return 'JP';
+      if (rawPhone.startsWith('+65')) return 'SG';
+      if (rawPhone.startsWith('+61')) return 'AU';
+      if (rawPhone.startsWith('+49')) return 'DE';
+      if (rawPhone.startsWith('+39')) return 'IT';
+      if (rawPhone.startsWith('+34')) return 'ES';
+      if (rawPhone.startsWith('+')) {
+        const match = rawPhone.match(/^\+(\d{1,3})/);
+        return match ? `+${match[1]}` : '';
+      }
+      return '';
+    })();
+
+    phoneCellHTML = `
+      <div class="phone-wrap">
+        ${countryBadge ? `<span class="phone-badge">${countryBadge}</span>` : ''}
+        <span class="phone-val">${phoneStr}</span>
+        <button class="phone-copy-btn" title="Copy number" data-phone="${phoneStr}">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+      </div>`;
+  }
 
   tr.innerHTML = `
     <td class="col-index">${rowNum}</td>
@@ -431,29 +458,21 @@ function appendRow(lead) {
       </div>
     </td>
     <td class="col-rating">${ratingHTML}</td>
-    <td class="col-phone">
-      <div class="phone-wrap">
-        ${countryBadge ? `<span class="phone-badge">${countryBadge}</span>` : ''}
-        <span class="phone-val">${phoneStr}</span>
-        <button class="phone-copy-btn" title="Copy number" data-phone="${phoneStr}">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="9" y="9" width="13" height="13" rx="2"/>
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-          </svg>
-        </button>
-      </div>
-    </td>
+    <td class="col-phone">${phoneCellHTML}</td>
     <td class="col-email">${emailHTML}</td>
     <td class="col-instagram">${igHTML}</td>
     <td class="col-website">${websiteHTML}</td>
   `;
 
-  // Copy phone button
-  tr.querySelector('.phone-copy-btn').addEventListener('click', function () {
-    copyText(this.dataset.phone);
-    this.classList.add('copied');
-    setTimeout(() => this.classList.remove('copied'), 1500);
-  });
+  // Safely attach copy phone button listener if present
+  const copyBtn = tr.querySelector('.phone-copy-btn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      copyText(this.dataset.phone);
+      this.classList.add('copied');
+      setTimeout(() => this.classList.remove('copied'), 1500);
+    });
+  }
 
   leadsBody.appendChild(tr);
 }

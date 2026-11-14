@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Based Location Scraper · Global</title>
-  <link rel="stylesheet" href="/styles.css?v=global_v2" />
+  <link rel="stylesheet" href="/styles.css?v=hygiene_v3" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23D4AF37'/><path d='M8 22L13 10l5 8 3-5 3 7' stroke='%2307080B' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
 </head>
 <body>
@@ -212,12 +212,12 @@
       <div class="bento-card card-accent-emerald">
         <div class="bento-top">
           <span class="bento-label">Phone Coverage</span>
-          <span class="bento-tag emerald">100%</span>
+          <span class="bento-tag emerald" id="val-phone-tag">100%</span>
         </div>
         <div class="bento-val-row">
-          <span class="bento-val val-emerald">100%</span>
+          <span class="bento-val val-emerald" id="val-phones">100%</span>
         </div>
-        <div class="bento-sub">100% Verified</div>
+        <div class="bento-sub" id="val-phone-sub">100% Verified</div>
       </div>
 
       <!-- Card 3: Emails Found -->
@@ -348,6 +348,6 @@
   <!-- Toast notification -->
   <div class="toast" id="toast"></div>
 
-  <script src="/app.js?v=global_v2"></script>
+  <script src="/app.js?v=hygiene_v3"></script>
 </body>
 </html>
