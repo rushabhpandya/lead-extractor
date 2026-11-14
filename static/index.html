@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Based Location Scraper · India</title>
-  <link rel="stylesheet" href="/styles.css?v=clean2026" />
+  <title>AI Based Location Scraper · Global</title>
+  <link rel="stylesheet" href="/styles.css?v=global2026" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23D4AF37'/><path d='M8 22L13 10l5 8 3-5 3 7' stroke='%2307080B' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
 </head>
 <body>
@@ -21,7 +21,7 @@
           </div>
           <div>
             <div class="logo-title">AI Based Location Scraper</div>
-            <div class="logo-sub">Real-Time B2B Contact Discovery · India</div>
+            <div class="logo-sub">Global B2B Contact &amp; Social Discovery Engine</div>
           </div>
         </div>
       </div>
@@ -58,11 +58,15 @@
               class="form-input"
               type="text"
               value="Gym"
-              placeholder="e.g. dentist, cafe, gym…"
+              placeholder="e.g. Antique Showroom, Art Gallery, Gym…"
               autocomplete="off"
             />
           </div>
           <div class="presets" id="category-presets">
+            <button class="preset-chip preset-chip-global" data-target="input-category">Antique Showroom</button>
+            <button class="preset-chip preset-chip-global" data-target="input-category">Interior Design</button>
+            <button class="preset-chip preset-chip-global" data-target="input-category">Art Gallery</button>
+            <button class="preset-chip preset-chip-global" data-target="input-category">Vintage Furniture</button>
             <button class="preset-chip active-chip" data-target="input-category">Gym</button>
             <button class="preset-chip" data-target="input-category">Cafe</button>
             <button class="preset-chip" data-target="input-category">Dentist</button>
@@ -78,8 +82,8 @@
         <!-- 2. Location -->
         <div class="form-group span-2">
           <div class="label-row">
-            <label class="form-label" for="input-location">City / Location</label>
-            <span class="input-hint">India</span>
+            <label class="form-label" for="input-location">Target City, Hub, or Multi-City Batch</label>
+            <span class="input-hint">Worldwide</span>
           </div>
           <div class="input-well">
             <span class="input-icon">📍</span>
@@ -88,11 +92,17 @@
               class="form-input"
               type="text"
               value="Mumbai"
-              placeholder="e.g. Mumbai, Delhi, Pune…"
+              placeholder="e.g. Mayfair, London; Manhattan, NY; Paris; Dubai…"
               autocomplete="off"
             />
           </div>
           <div class="presets" id="location-presets">
+            <button class="preset-chip preset-chip-global" data-target="input-location">Mayfair, London</button>
+            <button class="preset-chip preset-chip-global" data-target="input-location">Manhattan, NY</button>
+            <button class="preset-chip preset-chip-global" data-target="input-location">Paris</button>
+            <button class="preset-chip preset-chip-global" data-target="input-location">Los Angeles</button>
+            <button class="preset-chip preset-chip-global" data-target="input-location">Palm Beach</button>
+            <button class="preset-chip preset-chip-global" data-target="input-location">Dubai</button>
             <button class="preset-chip active-chip" data-target="input-location">Mumbai</button>
             <button class="preset-chip" data-target="input-location">Delhi</button>
             <button class="preset-chip" data-target="input-location">Bengaluru</button>
@@ -108,7 +118,7 @@
         <div class="form-group">
           <div class="label-row">
             <label class="form-label" for="input-volume">Volume</label>
-            <span class="input-hint">10–200</span>
+            <span class="input-hint">10–1000</span>
           </div>
           <div class="input-well">
             <span class="input-icon">#</span>
@@ -117,9 +127,9 @@
               class="form-input mono"
               type="number"
               min="10"
-              max="200"
+              max="1000"
               value="50"
-              placeholder="10–200"
+              placeholder="10–1000"
             />
           </div>
         </div>
@@ -244,7 +254,7 @@
               type="text"
               id="table-search"
               class="table-search-input"
-              placeholder="Search by name, area, or phone..."
+              placeholder="Search by name, area, phone, or @instagram..."
               autocomplete="off"
             />
           </div>
@@ -293,6 +303,7 @@
                 <th class="sortable" data-col="rating">Rating <span class="sort-arrow"></span></th>
                 <th>Phone Number</th>
                 <th class="sortable" data-col="email">Email <span class="sort-arrow"></span></th>
+                <th>Instagram</th>
                 <th>Website</th>
               </tr>
             </thead>
@@ -312,14 +323,14 @@
           <div class="empty-state-title">Ready to Extract Leads</div>
           <div class="empty-state-sub">Enter search parameters above or select a quick demo to get started:</div>
           <div class="demo-pills-row">
+            <button class="demo-pill" data-cat="Antique Showroom" data-loc="Mayfair, London" data-vol="20">
+              <span class="pill-spark">⚡</span> Demo: Antiques in Mayfair
+            </button>
             <button class="demo-pill" data-cat="Gym" data-loc="Mumbai" data-vol="50">
               <span class="pill-spark">⚡</span> Demo: 50 Gyms in Mumbai
             </button>
-            <button class="demo-pill" data-cat="Cafe" data-loc="Pune" data-vol="50">
-              <span class="pill-spark">⚡</span> Demo: 50 Cafes in Pune
-            </button>
-            <button class="demo-pill" data-cat="Dentist" data-loc="Delhi" data-vol="50">
-              <span class="pill-spark">⚡</span> Demo: 50 Dentists in Delhi
+            <button class="demo-pill" data-cat="Art Gallery" data-loc="Paris" data-vol="20">
+              <span class="pill-spark">⚡</span> Demo: Art Galleries in Paris
             </button>
           </div>
         </div>
@@ -332,6 +343,6 @@
   <!-- Toast notification -->
   <div class="toast" id="toast"></div>
 
-  <script src="/app.js?v=clean2026"></script>
+  <script src="/app.js?v=global2026"></script>
 </body>
 </html>

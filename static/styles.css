@@ -1180,3 +1180,70 @@ td.col-website {
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.24); }
+
+
+/* ══════════════════════════════════════════════════════════════
+   Global Edition Additions (v=global2026)
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── Global preset chips (gold tinted for luxury categories) ── */
+.preset-chip-global {
+  border-color: rgba(212, 175, 55, 0.4) !important;
+  color: var(--gold-light) !important;
+  background: rgba(212, 175, 55, 0.07) !important;
+}
+
+.preset-chip-global:hover {
+  background: rgba(212, 175, 55, 0.18) !important;
+  border-color: var(--gold) !important;
+  box-shadow: 0 0 10px rgba(212, 175, 55, 0.25) !important;
+}
+
+/* ── Instagram pill link ──────────────────────────────────────── */
+.instagram-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  color: var(--gold-light);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+  text-decoration: none;
+  transition: all var(--transition);
+  white-space: nowrap;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.instagram-pill:hover {
+  background: rgba(212, 175, 55, 0.18);
+  border-color: var(--gold);
+  box-shadow: 0 0 10px rgba(212, 175, 55, 0.2);
+  color: var(--gold);
+}
+
+.instagram-pill svg {
+  flex-shrink: 0;
+  stroke: currentColor;
+}
+
+/* ── Instagram column sizing ─────────────────────────────────── */
+.col-instagram {
+  min-width: 110px;
+  max-width: 150px;
+}
+
+/* ── Wider table scroll for 8-column layout ──────────────────── */
+.table-scroll {
+  min-width: 900px;
+}
+
+#leads-table th,
+#leads-table td {
+  white-space: nowrap;
+}

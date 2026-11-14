@@ -21,7 +21,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from scraper import extract_leads
+from services.scraper_engine import extract_leads
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(name)s  %(message)s")
 logger = logging.getLogger("main")
@@ -141,6 +141,7 @@ async def api_stop(req_id: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/export/sheets")
+@app.post("/api/export/excel")
 async def api_export_sheets(request: Request):
     """
     Generate an in-memory .xlsx file formatted for Google Sheets and Excel.
@@ -162,7 +163,8 @@ async def api_export_sheets(request: Request):
     ws = wb.active
     ws.title = "Verified B2B Leads"
 
-    headers = ["#", "Business Name", "Address", "Rating", "Phone Number", "Email", "Website"]
+    headers = ["#", "Business Name", "Address", "Rating", "Phone Number",
+               "Phone (E.164)", "Email", "Instagram Handle", "Website", "Category", "Country"]
     ws.append(headers)
 
     # Styling
@@ -188,6 +190,9 @@ async def api_export_sheets(request: Request):
         r_val = item.get("rating")
         rating_num = float(r_val) if r_val is not None and str(r_val).strip() else ""
         phone_str = str(item.get("phone", "") or "")
+        phone_e164_str = str(item.get("phone_e164", "") or phone_str)
+        ig_handle = str(item.get("instagram_handle", "") or "")
+        ig_display = ("@" + ig_handle) if ig_handle else ""
 
         row = [
             idx,
@@ -195,16 +200,31 @@ async def api_export_sheets(request: Request):
             str(item.get("address", "") or ""),
             rating_num,
             phone_str,
+            phone_e164_str,
             str(item.get("email", "") or ""),
+            ig_display,
             str(item.get("website", "") or ""),
+            str(item.get("category", "") or ""),
+            str(item.get("country_code", "") or ""),
         ]
         ws.append(row)
         current_row = idx + 1
 
-        # CRITICAL FIX: Explicit string type on phone number cell
+        # CRITICAL FIX: Explicit string type on phone number cells + Instagram
         p_cell = ws.cell(row=current_row, column=5)
         p_cell.data_type = 's'
         p_cell.value = phone_str
+        p_cell.number_format = '@'
+
+        e164_cell = ws.cell(row=current_row, column=6)
+        e164_cell.data_type = 's'
+        e164_cell.value = phone_e164_str
+        e164_cell.number_format = '@'
+
+        ig_cell = ws.cell(row=current_row, column=8)
+        ig_cell.data_type = 's'
+        ig_cell.value = ig_display
+        ig_cell.number_format = '@'
 
         # Rating formatting
         if rating_num != "":

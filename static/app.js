@@ -1,6 +1,6 @@
 /**
  * app.js — AI Based Location Scraper Frontend Logic
- * Clean Enterprise Interface
+ * Global Enterprise Edition (v=global2026)
  * Vanilla JS: SSE streaming, sortable table, copy-to-clipboard, CSV/Excel/Sheets export.
  * Zero external JS dependencies.
  */
@@ -169,7 +169,7 @@ function generateReqId() {
 function startExtraction() {
   const category = inputCategory.value.trim();
   const location = inputLocation.value.trim();
-  const volume   = Math.min(200, Math.max(10, parseInt(inputVolume.value, 10) || 50));
+  const volume   = Math.min(1000, Math.max(10, parseInt(inputVolume.value, 10) || 50));
   const star     = parseInt(inputStar.value, 10);
 
   if (!category) { showToast('Please enter a category.'); inputCategory.focus(); return; }
@@ -364,6 +364,20 @@ function appendRow(lead) {
        </div>`
     : '<span class="empty-field">—</span>';
 
+  // Instagram cell
+  const igHandle = lead.instagram_handle || null;
+  const igUrl    = lead.instagram_url    || (igHandle ? `https://www.instagram.com/${igHandle}/` : null);
+  const igHTML = igHandle && igUrl
+    ? `<a class="instagram-pill" href="${esc(igUrl)}" target="_blank" rel="noopener" title="${esc(igUrl)}">
+         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+           <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/>
+           <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>
+           <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/>
+         </svg>
+         @${esc(igHandle)}
+       </a>`
+    : '<span class="empty-field">—</span>';
+
   const websiteHTML = lead.website
     ? `<a class="website-link" href="${esc(lead.website)}" target="_blank" rel="noopener" title="${esc(lead.website)}">
          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -373,6 +387,19 @@ function appendRow(lead) {
          </svg>
        </a>`
     : '<span class="empty-field">—</span>';
+
+  // Phone badge: show country prefix dynamically
+  const phoneStr = esc(lead.phone || '');
+  const phoneBadge = (() => {
+    if (!phoneStr) return '';
+    if (phoneStr.startsWith('+91')) return '+91';
+    if (phoneStr.startsWith('+44')) return '+44';
+    if (phoneStr.startsWith('+1'))  return '+1';
+    if (phoneStr.startsWith('+33')) return '+33';
+    if (phoneStr.startsWith('+971')) return '+971';
+    if (phoneStr.startsWith('+')) return phoneStr.slice(0, phoneStr.indexOf(' ') > 0 ? phoneStr.indexOf(' ') : 4);
+    return '';
+  })();
 
   tr.innerHTML = `
     <td class="col-index">${rowNum}</td>
@@ -396,9 +423,9 @@ function appendRow(lead) {
     <td class="col-rating">${ratingHTML}</td>
     <td class="col-phone">
       <div class="phone-wrap">
-        <span class="phone-badge">+91</span>
-        <span class="phone-val">${esc(lead.phone)}</span>
-        <button class="phone-copy-btn" title="Copy number" data-phone="${esc(lead.phone)}">
+        ${phoneBadge ? `<span class="phone-badge">${phoneBadge}</span>` : ''}
+        <span class="phone-val">${phoneStr}</span>
+        <button class="phone-copy-btn" title="Copy number" data-phone="${phoneStr}">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -407,6 +434,7 @@ function appendRow(lead) {
       </div>
     </td>
     <td class="col-email">${emailHTML}</td>
+    <td class="col-instagram">${igHTML}</td>
     <td class="col-website">${websiteHTML}</td>
   `;
 
@@ -476,7 +504,9 @@ function sortTable(col, dir) {
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 function leadsToTSV(textSafePhones = false) {
-  const headers = ['#', 'Business Name', 'Address', 'Rating', 'Phone Number', 'Email', 'Website'];
+  const headers = ['#', 'Business Name', 'Address', 'Rating', 'Phone Number',
+                   'Phone (E.164)', 'Email', 'Instagram Handle', 'Website',
+                   'Category', 'Country'];
   const rows = state.leads.map((l, i) => {
     let phoneVal = l.phone || '';
     if (textSafePhones && phoneVal.startsWith('+')) {
@@ -489,15 +519,21 @@ function leadsToTSV(textSafePhones = false) {
       l.address || '',
       l.rating  != null ? parseFloat(l.rating).toFixed(1) : '',
       phoneVal,
+      l.phone_e164 || l.phone || '',
       l.email   || '',
+      l.instagram_handle ? '@' + l.instagram_handle : '',
       l.website || '',
+      l.category || '',
+      l.country_code || '',
     ];
   });
   return [headers, ...rows].map(r => r.join('\t')).join('\n');
 }
 
 function leadsToCSV() {
-  const headers = ['#', 'Business Name', 'Address', 'Rating', 'Phone Number', 'Email', 'Website'];
+  const headers = ['#', 'Business Name', 'Address', 'Rating', 'Phone Number',
+                   'Phone (E.164)', 'Email', 'Instagram Handle', 'Website',
+                   'Category', 'Country'];
   const csvEsc = v => `"${String(v).replace(/"/g, '""')}"`;
   const rows = state.leads.map((l, i) => {
     const cleanName = (l.name || '').replace(/\s*\(Branch\s*\d+\)/gi, '');
@@ -507,8 +543,12 @@ function leadsToCSV() {
       l.address || '',
       l.rating  != null ? parseFloat(l.rating).toFixed(1) : '',
       l.phone   || '',
+      l.phone_e164 || l.phone || '',
       l.email   || '',
+      l.instagram_handle ? '@' + l.instagram_handle : '',
       l.website || '',
+      l.category || '',
+      l.country_code || '',
     ];
   });
   return '\uFEFF' + [headers, ...rows].map(r => r.map(csvEsc).join(',')).join('\r\n');
