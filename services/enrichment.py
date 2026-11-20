@@ -28,6 +28,139 @@ except ImportError:
 logger = logging.getLogger("enrichment")
 
 # ---------------------------------------------------------------------------
+# Sovereign ccTLD & Language/Script Geo Alignment (Upgrade 1)
+# ---------------------------------------------------------------------------
+
+# Generic & Commercial TLDs that are globally used and exempt from ccTLD mismatching
+GENERIC_COMMERCIAL_TLDS: Set[str] = {
+    "com", "net", "org", "edu", "gov", "mil", "int",
+    "io", "co", "ai", "me", "tv", "biz", "info", "studio", "design", "agency",
+    "shop", "store", "art", "gallery", "app", "dev", "online", "site", "world",
+    "global", "pro", "xyz", "cloud", "tech", "group", "ltd", "club", "space",
+    "live", "life", "center", "expert", "cc", "mobi", "link", "media", "top",
+    "vip", "work", "fit", "run", "guru", "solutions", "boutique", "fashion",
+    "luxury", "house", "style", "direct", "city", "zone", "today", "show",
+}
+
+# Two-letter sovereign ccTLD mapping to ISO-3166 alpha-2 country codes
+CCTLD_TO_ISO: Dict[str, str] = {
+    "uk": "GB", "de": "DE", "fr": "FR", "it": "IT", "es": "ES",
+    "in": "IN", "ca": "CA", "au": "AU", "jp": "JP", "ae": "AE",
+    "sg": "SG", "nz": "NZ", "ch": "CH", "at": "AT", "nl": "NL",
+    "be": "BE", "se": "SE", "no": "NO", "dk": "DK", "fi": "FI",
+    "pl": "PL", "pt": "PT", "ie": "IE", "za": "ZA", "br": "BR",
+    "mx": "MX", "us": "US", "cn": "CN", "hk": "HK", "tw": "TW",
+    "kr": "KR", "cz": "CZ", "gr": "GR", "hu": "HU", "ro": "RO",
+    "bg": "BG", "hr": "HR", "si": "SI", "sk": "SK", "ru": "RU",
+    "tr": "TR", "il": "IL", "sa": "SA", "cl": "CL", "ar": "AR",
+}
+
+# Dominant script patterns for geo validation
+_JAPANESE_RE = re.compile(r'[\u3040-\u30ff]')
+_CHINESE_RE = re.compile(r'[\u4e00-\u9fff]')
+_CYRILLIC_RE = re.compile(r'[\u0400-\u04ff]')
+_ARABIC_RE = re.compile(r'[\u0600-\u06ff]')
+_DEVANAGARI_RE = re.compile(r'[\u0900-\u097f]')
+
+
+def extract_domain_cctld(domain_or_url: str) -> Optional[str]:
+    """
+    Extract sovereign 2-letter ccTLD mapped to ISO-3166 alpha-2 country code.
+    Returns None if domain uses a generic or commercial TLD (.com, .net, .io, .co, .ai, etc.).
+    """
+    if not domain_or_url:
+        return None
+    raw = domain_or_url.strip()
+    if "@" in raw:
+        raw = raw.split("@")[-1].strip()
+    if "://" in raw:
+        raw = urlparse(raw).netloc
+    raw = re.sub(r":\d+$", "", raw).lower().strip()
+    if raw.startswith("www."):
+        raw = raw[4:]
+
+    parts = raw.split(".")
+    if len(parts) < 2:
+        return None
+
+    last_part = parts[-1].lower()
+
+    # If the TLD is in our generic/commercial exempt list, it's not a sovereign ccTLD
+    if last_part in GENERIC_COMMERCIAL_TLDS:
+        return None
+
+    # Handle multi-part public suffixes like .co.uk, .com.au, .co.in
+    if len(parts) >= 3 and parts[-2].lower() in ("co", "com", "org", "net", "ltd", "firm", "gen"):
+        if last_part in CCTLD_TO_ISO:
+            return CCTLD_TO_ISO[last_part]
+        if len(last_part) == 2:
+            return last_part.upper()
+
+    # Standard two-letter ccTLD check
+    if len(last_part) == 2:
+        if last_part in CCTLD_TO_ISO:
+            return CCTLD_TO_ISO[last_part]
+        return last_part.upper()
+
+    return None
+
+
+def is_cctld_mismatched(domain_or_url_or_email: str, target_iso: Optional[str]) -> bool:
+    """
+    Sovereign ccTLD Gatekeeper:
+    Checks if a website or extracted email uses a sovereign 2-letter country-code TLD
+    that blatantly contradicts target_iso.
+    Returns True if MISMATCHED (should be rejected), False otherwise.
+    """
+    if not domain_or_url_or_email or not target_iso:
+        return False
+    target = target_iso.upper().strip()
+    cctld_iso = extract_domain_cctld(domain_or_url_or_email)
+    if not cctld_iso:
+        return False  # Generic or international domain
+
+    # UK and GB alias
+    if (cctld_iso == "GB" and target == "UK") or (cctld_iso == "UK" and target == "GB"):
+        return False
+
+    return cctld_iso != target
+
+
+def is_script_or_lang_mismatched(html: str, target_iso: Optional[str]) -> bool:
+    """
+    Address & Script Consistency:
+    Detects if dominant Unicode script or <html lang="..."> blatantly contradicts
+    the target country's official languages/scripts.
+    """
+    if not html or not target_iso:
+        return False
+    target = target_iso.upper().strip()
+
+    # 1. Inspect <html lang="..."> tag
+    m_lang = re.search(r'<html[^>]+lang=["\']([a-zA-Z]{2}(?:-[a-zA-Z0-9]+)?)["\']', html[:4000], re.I)
+    if m_lang:
+        lang_code = m_lang.group(1).lower().split("-")[0]
+        western_targets = {"US", "GB", "CA", "AU", "NZ", "IE", "FR", "IT", "DE", "ES", "NL", "CH", "AT"}
+        if target in western_targets and lang_code in ("ja", "zh", "ru", "ko", "ar", "hi"):
+            return True
+
+    # 2. Inspect text content for dominant non-target scripts
+    clean_sample = re.sub(r'<[^>]+>', ' ', html[:40000])
+    western_targets = {"US", "GB", "CA", "AU", "NZ", "IE", "FR", "IT", "DE", "ES", "NL", "CH", "AT", "SE", "NO", "DK", "FI"}
+    if target in western_targets:
+        if len(_JAPANESE_RE.findall(clean_sample)) >= 10:
+            return True
+        if len(_CHINESE_RE.findall(clean_sample)) >= 20:
+            return True
+        if len(_CYRILLIC_RE.findall(clean_sample)) >= 15:
+            return True
+        if len(_ARABIC_RE.findall(clean_sample)) >= 15:
+            return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Phone Validation & E.164 Formatting
 # ---------------------------------------------------------------------------
 
@@ -400,14 +533,17 @@ _GOOGLE_ADS_RE = re.compile(
     re.IGNORECASE,
 )
 
-_CMS_SIGNATURES = [
-    ("Shopify", re.compile(r'(?:cdn\.shopify\.com|Shopify\.theme|myshopify\.com|shopify-section)', re.I)),
-    ("WooCommerce", re.compile(r'(?:woocommerce-|wc-ajax=|class=[\'"][^\'"]*woocommerce|woocommerce_params)', re.I)),
-    ("WordPress", re.compile(r'(?:/wp-content/|/wp-includes/|wp-json/)', re.I)),
-    ("Webflow", re.compile(r'(?:assets\.website-files\.com|data-wf-page|data-wf-site|webflow\.com)', re.I)),
-    ("Squarespace", re.compile(r'(?:static1\.squarespace\.com|squarespace-config|squarespace\.com)', re.I)),
-    ("Wix", re.compile(r'(?:wixsite\.com|static\.wixstatic\.com|wix\.com|wix-dropdown)', re.I)),
-    ("Magento", re.compile(r'(?:Mage\.Cookies|/skin/frontend/|static/frontend/|mage/)', re.I)),
+_STRICT_CMS_SIGNATURES = [
+    ("Shopify", re.compile(r'(?:cdn\.shopify\.com|Shopify\.theme|myshopify\.com)', re.I)),
+    ("WooCommerce", re.compile(r'(?:/plugins/woocommerce/|woocommerce-js|wc-block)', re.I)),
+    ("WordPress", re.compile(r'(?:/wp-content/|/wp-includes/|<meta[^>]+name=["\']generator["\'][^>]+content=["\'][^"\']*WordPress)', re.I)),
+    ("Webflow", re.compile(r'(?:assets\.website-files\.com|assets-global\.website-files\.com|data-wf-site)', re.I)),
+    ("Squarespace", re.compile(r'(?:static1\.squarespace\.com|squarespace-cdn\.com|Static\.SQUARESPACE_CONTEXT)', re.I)),
+    ("Wix", re.compile(r'(?:static\.wixstatic\.com|wix-code-sdk|X-Wix-)', re.I)),
+    ("Magento", re.compile(r'(?:text/x-magento-init|Mage\.Cookies|/static/frontend/Magento/|(?:requirejs-config\.js.*mage/|mage/.*requirejs-config\.js))', re.I)),
+    ("Ghost", re.compile(r'(?:<meta[^>]+name=["\']generator["\'][^>]+content=["\'][^"\']*Ghost|ghost-sdk)', re.I)),
+    ("Framer", re.compile(r'framerusercontent\.com', re.I)),
+    ("Next.js", re.compile(r'/_next/static/', re.I)),
 ]
 
 _WHATSAPP_LINK_RE = re.compile(
@@ -436,13 +572,16 @@ def detect_google_ads(html: str) -> bool:
 
 
 def detect_cms_platform(html: str) -> str:
-    """Detect primary web CMS/eCommerce platform from page HTML."""
+    """
+    Detect primary web CMS/eCommerce platform from structural DOM & asset signatures.
+    Returns CMS name or empty string "" (no noisy badge) when no explicit signature matches.
+    """
     if not html:
-        return "Custom"
-    for name, pattern in _CMS_SIGNATURES:
+        return ""
+    for name, pattern in _STRICT_CMS_SIGNATURES:
         if pattern.search(html):
             return name
-    return "Custom"
+    return ""
 
 
 def extract_whatsapp_url(

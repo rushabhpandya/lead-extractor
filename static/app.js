@@ -59,6 +59,85 @@ const toast           = $('toast');
 const tableSearch     = $('table-search');
 const gridCounter     = $('grid-counter');
 const btnCopyEmails   = $('btn-copy-emails');
+const btnApiBoost     = $('btn-api-boost');
+const boostStatusDot  = $('boost-status-dot');
+const boostModal      = $('boost-modal');
+const btnCloseBoost   = $('btn-close-boost');
+const inputSerperKey  = $('input-serper-key');
+const btnToggleKey    = $('btn-toggle-key');
+const btnSaveBoost    = $('btn-save-boost');
+const btnClearBoost   = $('btn-clear-boost');
+const boostStatusBanner = $('boost-status-banner');
+const bannerDot       = $('banner-dot');
+const bannerText      = $('banner-text');
+
+// ─── API Boost Configuration Modal Logic ─────────────────────────────────────
+
+function updateBoostUI() {
+  const key = (localStorage.getItem('lead_extractor_maps_key') || '').trim();
+  if (inputSerperKey) inputSerperKey.value = key;
+  if (key) {
+    if (boostStatusDot) boostStatusDot.classList.add('active');
+    if (boostStatusBanner) boostStatusBanner.classList.add('active');
+    if (bannerText) bannerText.textContent = 'Maps Boost Active (Serper.dev)';
+  } else {
+    if (boostStatusDot) boostStatusDot.classList.remove('active');
+    if (boostStatusBanner) boostStatusBanner.classList.remove('active');
+    if (bannerText) bannerText.textContent = 'Free Mode Active (Crawler Default)';
+  }
+}
+
+if (btnApiBoost) {
+  btnApiBoost.addEventListener('click', () => {
+    updateBoostUI();
+    if (boostModal) boostModal.style.display = 'flex';
+  });
+}
+
+if (btnCloseBoost) {
+  btnCloseBoost.addEventListener('click', () => {
+    if (boostModal) boostModal.style.display = 'none';
+  });
+}
+
+if (boostModal) {
+  boostModal.addEventListener('click', (e) => {
+    if (e.target === boostModal) boostModal.style.display = 'none';
+  });
+}
+
+if (btnToggleKey && inputSerperKey) {
+  btnToggleKey.addEventListener('click', () => {
+    inputSerperKey.type = inputSerperKey.type === 'password' ? 'text' : 'password';
+    btnToggleKey.textContent = inputSerperKey.type === 'password' ? '👁' : '🔒';
+  });
+}
+
+if (btnSaveBoost && inputSerperKey) {
+  btnSaveBoost.addEventListener('click', () => {
+    const key = inputSerperKey.value.trim();
+    if (key) {
+      localStorage.setItem('lead_extractor_maps_key', key);
+      showToast('Google Maps API Boost Activated!');
+    } else {
+      localStorage.removeItem('lead_extractor_maps_key');
+      showToast('Free Mode (No API Key)');
+    }
+    updateBoostUI();
+    if (boostModal) boostModal.style.display = 'none';
+  });
+}
+
+if (btnClearBoost && inputSerperKey) {
+  btnClearBoost.addEventListener('click', () => {
+    localStorage.removeItem('lead_extractor_maps_key');
+    inputSerperKey.value = '';
+    updateBoostUI();
+    showToast('API Key Cleared · Free Mode Active');
+  });
+}
+
+updateBoostUI();
 
 // ─── Active Preset Chips Highlighting ─────────────────────────────────────────
 
@@ -304,6 +383,7 @@ function startExtraction() {
   }, 200);
 
   // Build SSE URL
+  const savedMapsKey = (localStorage.getItem('lead_extractor_maps_key') || '').trim();
   const params = new URLSearchParams({
     category,
     location,
@@ -313,6 +393,9 @@ function startExtraction() {
     req_id:       state.reqId,
     bypass_cache: bypassCache ? 'true' : 'false',
   });
+  if (savedMapsKey) {
+    params.set('maps_api_key', savedMapsKey);
+  }
   const url = `/api/extract?${params.toString()}`;
 
   const es = new EventSource(url);
@@ -358,10 +441,11 @@ function handleMessage(msg, volume, es, myRunId) {
     appendRow(lead);
 
     const emailCount = state.leads.filter(l => l.email && l.email.length > 0).length;
+    const mxCount    = state.leads.filter(l => l.email_mx_verified).length;
     const phoneCount = state.leads.filter(l => l.phone && l.phone.trim().length > 0).length;
-    const phonePct = state.leads.length > 0 ? Math.round((phoneCount / state.leads.length) * 100) : 100;
+    const phonePct   = state.leads.length > 0 ? Math.round((phoneCount / state.leads.length) * 100) : 0;
     valLeads.textContent  = state.leads.length;
-    valEmails.textContent = emailCount;
+    valEmails.textContent = mxCount > 0 ? `${mxCount}` : `${emailCount}`;
     if (valPhones)   valPhones.textContent   = `${phonePct}%`;
     if (valPhoneTag) valPhoneTag.textContent = `${phonePct}%`;
     if (valPhoneSub) valPhoneSub.textContent = `${phoneCount}/${state.leads.length} Callable`;
@@ -479,22 +563,13 @@ function appendRow(lead) {
       ${cmsPlatform}
     </div>`;
 
-  // 2. Rating Column
+  // Rating value for inline badge in Business Name
   const ratingVal = lead.rating != null ? parseFloat(lead.rating) : null;
-  const ratingPct = ratingVal != null ? Math.min(100, Math.round((ratingVal / 5.0) * 100)) : 0;
-  const ratingHTML = ratingVal != null
-    ? `<div class="rating-cell-wrap">
-         <div class="rating-pill">
-           <span class="star-icon">★</span>
-           <span class="rating-val">${ratingVal.toFixed(1)}</span>
-         </div>
-         <div class="rating-mini-bar" title="${ratingVal.toFixed(1)} / 5.0">
-           <div class="rating-mini-fill" style="width: ${ratingPct}%"></div>
-         </div>
-       </div>`
-    : `<span class="rating-empty">—</span>`;
+  const ratingBadgeHTML = ratingVal != null
+    ? `<span class="rating-inline" title="${ratingVal.toFixed(1)} / 5.0">★ ${ratingVal.toFixed(1)}</span>`
+    : '';
 
-  // 3. Email Column with MX verification dot
+  // 2. Email Column with MX verification dot
   const mxDotHTML = lead.email_mx_verified
     ? `<span class="mx-check-dot" title="MX Deliverability Verified"></span>`
     : '';
@@ -507,9 +582,9 @@ function appendRow(lead) {
          <a class="email-link" href="mailto:${esc(lead.email)}" title="${esc(lead.email)}">${esc(lead.email)}</a>
          ${mxDotHTML}
        </div>`
-    : '<span class="empty-field">—</span>';
+    : '<span class="muted-dash">—</span>';
 
-  // 4. Instagram Column
+  // 3. Instagram Column
   const igHandle = lead.instagram_handle || null;
   const igUrl    = lead.instagram_url    || (igHandle ? `https://www.instagram.com/${igHandle}/` : null);
   const igHTML = igHandle && igUrl
@@ -521,22 +596,22 @@ function appendRow(lead) {
          </svg>
          @${esc(igHandle)}
        </a>`
-    : '<span class="empty-field">—</span>';
+    : '<span class="muted-dash">—</span>';
 
-  // 5. Website Column
+  // 4. Website Column (Clean icon + domain tooltip)
   const websiteHTML = lead.website
-    ? `<a class="website-link" href="${esc(lead.website)}" target="_blank" rel="noopener" title="${esc(lead.website)}">
-         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    ? `<a class="website-btn" href="${esc(lead.website)}" target="_blank" rel="noopener" title="${esc(lead.website)}">
+         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
            <polyline points="15 3 21 3 21 9"/>
            <line x1="10" y1="14" x2="21" y2="3"/>
          </svg>
        </a>`
-    : '<span class="empty-field">—</span>';
+    : '<span class="muted-dash">—</span>';
 
-  // 6. Phone Column with WhatsApp 1-Click Button & Copy
+  // 5. Phone Column with WhatsApp 1-Click Button & Copy (or muted dash)
   const rawPhone = (lead.phone || '').trim();
-  let phoneCellHTML = '<span class="empty-field">—</span>';
+  let phoneCellHTML = '<span class="muted-dash">—</span>';
   if (rawPhone) {
     const phoneStr = esc(rawPhone);
     const countryBadge = (() => {
@@ -579,6 +654,7 @@ function appendRow(lead) {
       </div>`;
   }
 
+  // 8 Balanced Zero-Clipping Columns
   tr.innerHTML = `
     <td class="col-index">${rowNum}</td>
     <td class="col-name">
@@ -587,22 +663,22 @@ function appendRow(lead) {
         <div class="biz-info">
           <div class="biz-title">
             <span>${esc(cleanName)}</span>
-            <span class="verified-badge" title="Verified Callable Phone">✓</span>
+            <span class="verified-badge" title="Verified Genuine Business">✓</span>
+            ${ratingBadgeHTML}
           </div>
         </div>
       </div>
     </td>
-    <td class="col-signals">${signalsHTML}</td>
     <td class="col-address" title="${esc(lead.address)}">
       <div class="address-wrap">
         <span class="loc-pin">📍</span>
         <span class="address-text">${esc(lead.address) || '—'}</span>
       </div>
     </td>
-    <td class="col-rating">${ratingHTML}</td>
     <td class="col-phone">${phoneCellHTML}</td>
     <td class="col-email">${emailHTML}</td>
     <td class="col-instagram">${igHTML}</td>
+    <td class="col-signals">${signalsHTML}</td>
     <td class="col-website">${websiteHTML}</td>
   `;
 

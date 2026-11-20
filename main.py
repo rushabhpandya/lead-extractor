@@ -5,6 +5,7 @@ and provides native Google Sheets .xlsx export via /api/export/sheets.
 """
 
 import io
+import os
 import asyncio
 import json
 import logging
@@ -76,6 +77,12 @@ async def api_extract(
     if req_id:
         _stop_events[req_id] = stop_event
 
+    maps_api_key = (
+        request.headers.get("x-maps-api-key")
+        or request.query_params.get("maps_api_key")
+        or os.environ.get("SERPER_API_KEY", "")
+    )
+
     start_ts = time.time()
     delivered = 0
 
@@ -89,8 +96,11 @@ async def api_extract(
                 star=star,
                 mode=mode,
                 bypass_cache=bypass_cache,
+                maps_api_key=maps_api_key,
+                stop_event=stop_event,
             ):
                 if await request.is_disconnected():
+                    stop_event.set()
                     break
                 if stop_event.is_set():
                     break
@@ -122,6 +132,7 @@ async def api_extract(
             yield f"data: {error_payload}\n\n"
 
         finally:
+            stop_event.set()
             if req_id and req_id in _stop_events:
                 del _stop_events[req_id]
 

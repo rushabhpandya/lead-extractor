@@ -70,6 +70,7 @@ async def api_extract(
                 volume=volume,
                 star=star,
                 mode=mode,
+                stop_event=stop_event,
             ):
                 if await request.is_disconnected():
                     break

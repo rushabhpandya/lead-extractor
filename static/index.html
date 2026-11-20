@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Based Location Scraper · Global</title>
-  <link rel="stylesheet" href="/styles.css?v=geo_align_v4" />
+  <link rel="stylesheet" href="/styles.css?v=v2026_boost" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23D4AF37'/><path d='M8 22L13 10l5 8 3-5 3 7' stroke='%2307080B' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
 </head>
 <body>
@@ -28,6 +28,11 @@
 
       <!-- Right Status & Credits -->
       <div class="header-right">
+        <button class="btn-api-boost" id="btn-api-boost" title="Configure optional Google Maps Places API (Serper.dev)">
+          <span class="boost-icon">⚡</span>
+          <span>API Boost</span>
+          <span class="boost-status-dot" id="boost-status-dot"></span>
+        </button>
         <div class="header-status">
           <span class="live-dot-pulse"></span>
           <span class="live-status-text">Online</span>
@@ -361,12 +366,11 @@
               <tr>
                 <th>#</th>
                 <th class="sortable" data-col="name">Business Name <span class="sort-arrow"></span></th>
-                <th class="sortable" data-col="score">Signals <span class="sort-arrow"></span></th>
                 <th class="sortable" data-col="address">Address <span class="sort-arrow"></span></th>
-                <th class="sortable" data-col="rating">Rating <span class="sort-arrow"></span></th>
                 <th>Phone Number</th>
                 <th class="sortable" data-col="email">Email <span class="sort-arrow"></span></th>
                 <th>Instagram</th>
+                <th class="sortable" data-col="score">Signals <span class="sort-arrow"></span></th>
                 <th>Website</th>
               </tr>
             </thead>
@@ -403,9 +407,50 @@
 
   </div><!-- /app-wrapper -->
 
+  <!-- Optional API Boost Configuration Modal -->
+  <div class="modal-overlay" id="boost-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span class="modal-icon">⚡</span> Google Maps API Boost (Optional)
+        </div>
+        <button class="modal-close-btn" id="btn-close-boost" type="button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Accelerate discovery by querying <strong>Google Maps Places</strong> directly via Serper.dev.
+          Injects genuine phone numbers, star ratings, and business websites straight into our live enrichment crawler.
+          Your key is stored locally in your browser.
+        </p>
+        <div class="boost-status-banner" id="boost-status-banner">
+          <span class="banner-dot" id="banner-dot"></span>
+          <span class="banner-text" id="banner-text">Free Mode Active (Crawler Default)</span>
+        </div>
+        <div class="form-group" style="margin-top: 14px;">
+          <label class="form-label" for="input-serper-key">Serper.dev API Key</label>
+          <div class="input-well">
+            <span class="input-icon">🔑</span>
+            <input
+              id="input-serper-key"
+              class="form-input mono"
+              type="password"
+              placeholder="Paste Serper API key here..."
+              autocomplete="off"
+            />
+            <button class="btn-toggle-key" id="btn-toggle-key" type="button" title="Show/Hide Key">👁</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btn-clear-boost" type="button">Clear Key</button>
+        <button class="btn-primary" id="btn-save-boost" type="button">Save &amp; Activate</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast notification -->
   <div class="toast" id="toast"></div>
 
-  <script src="/app.js?v=geo_align_v4"></script>
+  <script src="/app.js?v=v2026_boost"></script>
 </body>
 </html>

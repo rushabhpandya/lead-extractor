@@ -51,7 +51,11 @@ from services.enrichment import (
     extract_whatsapp_url,
     extract_linkedin_url,
     calculate_lead_score,
+    is_cctld_mismatched,
+    is_script_or_lang_mismatched,
+    extract_domain_cctld,
 )
+from services.maps_provider import harvest_maps_candidates
 from services.storage import (
     save_lead_to_db,
     save_leads_batch,
@@ -1001,104 +1005,122 @@ async def crawl_business_website(
 ) -> Optional[dict]:
     """
     Crawl business website homepage and contact subpage.
-    Extracts brand name, verified phone (E.164), real email, real Instagram.
-    Implements search snippet pre-extraction fallback on HTTP errors/timeouts (Fix 3).
-    Relies on negative filtering without arbitrary title stem rejection (Fix 1).
+    Extracts brand name, callable phone (E.164), real email, real Instagram.
+    Enforces sovereign ccTLD checks and language/script geo consistency.
+    Implements multi-channel reachability gatekeeper (phone, MX email, or IG).
     """
-    url = candidate["url"]
+    url = candidate.get("url", "")
     root_domain = candidate.get("root_domain") or extract_root_domain(url)
-    base_domain = urlparse(url).netloc
+    base_domain = urlparse(url).netloc if url else ""
 
-    # Pre-crawl path & public sector rejection (Rule 3)
-    parsed_path = urlparse(url).path
-    if NON_BUSINESS_PATH_PATTERNS.search(parsed_path):
+    # Sovereign ccTLD Gatekeeper: Reject foreign sovereign ccTLD pre-crawl
+    if url and is_cctld_mismatched(url, country_iso):
         return None
-    if PUBLIC_SECTOR_JUNK_PATTERNS.search(url):
-        return None
+
+    # Pre-crawl path & public sector rejection
+    if url:
+        parsed_path = urlparse(url).path
+        if NON_BUSINESS_PATH_PATTERNS.search(parsed_path):
+            return None
+        if PUBLIC_SECTOR_JUNK_PATTERNS.search(url):
+            return None
 
     html = ""
     headers = get_browser_headers(country_iso)
-    try:
-        async with client.stream(
-            "GET",
-            url,
-            headers=headers,
-            timeout=httpx.Timeout(3.2, connect=1.8, read=2.5),
-            follow_redirects=True,
-        ) as resp:
-            if resp.status_code < 400:
-                content_type = resp.headers.get("content-type", "").lower()
-                # Upgrade 1: Immediately abort non-HTML responses
-                if any(t in content_type for t in ("text/html", "application/xhtml")):
-                    chunks = []
-                    total_bytes = 0
-                    max_bytes = 300_000  # Cap HTML ingestion at 300 KB
-                    async for chunk in resp.aiter_bytes():
-                        chunks.append(chunk)
-                        total_bytes += len(chunk)
-                        if total_bytes >= max_bytes:
-                            break
-                    raw_bytes = b"".join(chunks)[:max_bytes]
-                    encoding = resp.encoding or "utf-8"
-                    try:
-                        html = raw_bytes.decode(encoding, errors="replace")
-                    except Exception:
-                        html = raw_bytes.decode("utf-8", errors="replace")
-    except Exception:
-        html = ""
+    if url:
+        try:
+            async with client.stream(
+                "GET",
+                url,
+                headers=headers,
+                timeout=httpx.Timeout(3.2, connect=1.8, read=2.5),
+                follow_redirects=True,
+            ) as resp:
+                if resp.status_code < 400:
+                    content_type = resp.headers.get("content-type", "").lower()
+                    if any(t in content_type for t in ("text/html", "application/xhtml")):
+                        chunks = []
+                        total_bytes = 0
+                        max_bytes = 300_000  # Cap HTML ingestion at 300 KB
+                        async for chunk in resp.aiter_bytes():
+                            chunks.append(chunk)
+                            total_bytes += len(chunk)
+                            if total_bytes >= max_bytes:
+                                break
+                        raw_bytes = b"".join(chunks)[:max_bytes]
+                        encoding = resp.encoding or "utf-8"
+                        try:
+                            html = raw_bytes.decode(encoding, errors="replace")
+                        except Exception:
+                            html = raw_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            html = ""
 
-    # Search Snippet Pre-Extraction Fallback (Fix 3 & Upgrade 2)
-    # If website blocked, timed out, or returned an error, extract phone from search snippet
+    # Search Snippet / Pre-populated Maps Fallback
     if not html:
         snippet = candidate.get("snippet", "")
-        if snippet:
-            raw_snippet_phones = []
+        pre_phone = candidate.get("phone", "")
+        e164, disp, _, v_reg = validate_and_format_phone(pre_phone, country_iso, target_iso=country_iso)
+        if not e164 and snippet:
             try:
                 for match in phonenumbers.PhoneNumberMatcher(snippet, country_iso):
-                    raw_snippet_phones.append(phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164))
+                    p_str = phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164)
+                    e164, disp, _, v_reg = validate_and_format_phone(p_str, country_iso, target_iso=country_iso)
+                    if e164:
+                        break
             except Exception:
                 pass
-            for p in raw_snippet_phones:
-                e164, disp, _, v_reg = validate_and_format_phone(p, country_iso, target_iso=country_iso)
-                if e164:
-                    brand_name = resolve_brand_name(None, None, candidate.get("title", ""), root_domain, city, state, country_name)
-                    em_matches = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', snippet)
-                    email, mx_verified, _ = await rank_and_verify_emails(em_matches)
-                    wa_url = extract_whatsapp_url("", e164, is_whatsapp_ready=True)
-                    score = calculate_lead_score(
-                        has_phone=True,
-                        has_whatsapp=bool(wa_url),
-                        email=email,
-                        email_mx_verified=mx_verified,
-                        has_instagram=False,
-                        address=f"{city}, {country_name}",
-                        city=city,
-                        country_name=country_name,
-                        has_meta_pixel=False,
-                        has_google_ads=False,
-                    )
-                    return {
-                        "name": brand_name,
-                        "address": f"{city}, {country_name}",
-                        "rating": None,
-                        "phone": disp,
-                        "phone_e164": e164,
-                        "email": email,
-                        "instagram_handle": None,
-                        "instagram_url": None,
-                        "website": url,
-                        "category": category.strip().title(),
-                        "city": city,
-                        "country_code": (v_reg or country_iso).upper(),
-                        "source": "snippet_discovery",
-                        "has_meta_pixel": False,
-                        "has_google_ads": False,
-                        "cms_platform": "Custom",
-                        "whatsapp_url": wa_url,
-                        "linkedin_url": "",
-                        "lead_score": score,
-                        "email_mx_verified": mx_verified,
-                    }
+
+        brand_name = candidate.get("name") or resolve_brand_name(None, None, candidate.get("title", ""), root_domain, city, state, country_name)
+        em_matches = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', snippet)
+        valid_ems = [em for em in em_matches if not is_cctld_mismatched(em, country_iso)]
+        email, mx_verified, _ = await rank_and_verify_emails(valid_ems)
+        wa_url = extract_whatsapp_url("", e164, is_whatsapp_ready=True) if e164 else ""
+
+        # Multi-Channel Reachability Gatekeeper
+        has_phone = bool(e164 and disp)
+        has_mx_email = bool(email and mx_verified)
+        has_ig = bool(url and candidate.get("instagram_handle"))
+        if not (has_phone or has_mx_email or has_ig):
+            return None
+
+        score = calculate_lead_score(
+            has_phone=has_phone,
+            has_whatsapp=bool(wa_url),
+            email=email,
+            email_mx_verified=mx_verified,
+            has_instagram=has_ig,
+            address=candidate.get("address") or f"{city}, {country_name}",
+            city=city,
+            country_name=country_name,
+            has_meta_pixel=False,
+            has_google_ads=False,
+        )
+        return {
+            "name": brand_name,
+            "address": candidate.get("address") or f"{city}, {country_name}",
+            "rating": candidate.get("rating"),
+            "phone": disp or "",
+            "phone_e164": e164 or "",
+            "email": email or "",
+            "instagram_handle": candidate.get("instagram_handle") or None,
+            "instagram_url": candidate.get("instagram_url") or None,
+            "website": url,
+            "category": category.strip().title(),
+            "city": city,
+            "country_code": (v_reg or country_iso).upper(),
+            "source": candidate.get("source", "snippet_discovery"),
+            "has_meta_pixel": False,
+            "has_google_ads": False,
+            "cms_platform": "",
+            "whatsapp_url": wa_url,
+            "linkedin_url": "",
+            "lead_score": score,
+            "email_mx_verified": mx_verified,
+        }
+
+    # Language/Script Consistency Check on HTML
+    if is_script_or_lang_mismatched(html, country_iso):
         return None
 
     soup = BeautifulSoup(html, "html.parser")
@@ -1108,11 +1130,11 @@ async def crawl_business_website(
     if og_type and og_type.get("content", "").strip().lower() == "article":
         return None
 
-    raw_page_title = soup.title.get_text().strip() if soup.title else candidate["title"]
+    raw_page_title = soup.title.get_text().strip() if soup.title else candidate.get("title", "")
     if EDITORIAL_TITLE_PREFIXES.search(raw_page_title) or PUBLIC_SECTOR_JUNK_PATTERNS.search(raw_page_title):
         return None
 
-    # 1. Brand Name & Identity Extraction from Root Homepage Only (Rule 2)
+    # 1. Brand Name & Identity Extraction from Root Homepage Only
     json_ld_name = None
     json_ld_types: List[str] = []
     for script in soup.find_all("script", type="application/ld+json"):
@@ -1139,11 +1161,14 @@ async def crawl_business_website(
     og_site = soup.find("meta", property=re.compile(r"^og:site_name$", re.I)) or soup.find("meta", attrs={"name": re.compile(r"^og:site_name$", re.I)})
     og_site_name = og_site["content"].strip() if (og_site and og_site.get("content")) else None
 
-    brand_name = resolve_brand_name(og_site_name, json_ld_name, raw_page_title, root_domain, city, state, country_name)
+    brand_name = candidate.get("name") or resolve_brand_name(og_site_name, json_ld_name, raw_page_title, root_domain, city, state, country_name)
 
     # 2. Check Homepage for Phone & Email first
     homepage_text = soup.get_text(" ", strip=True)
     raw_phones: List[str] = []
+    if candidate.get("phone"):
+        raw_phones.append(candidate["phone"])
+
     for a in soup.find_all("a", href=re.compile(r"^tel:", re.I)):
         raw_phones.append(a["href"].replace("tel:", "").strip())
 
@@ -1157,7 +1182,7 @@ async def crawl_business_website(
     for a in soup.find_all("a", href=re.compile(r"^mailto:", re.I)):
         raw_emails.append(a["href"])
 
-    # If missing phone or email, crawl contact subpage quickly (Contact info ONLY, never brand name)
+    # If missing phone or email, crawl contact subpage quickly
     contact_html = ""
     if len(raw_phones) == 0 or len(raw_emails) == 0:
         contact_urls: List[str] = []
@@ -1211,7 +1236,7 @@ async def crawl_business_website(
     combined_soup = BeautifulSoup(combined_html, "html.parser")
     combined_text = combined_soup.get_text(" ", strip=True)
 
-    # 3. Strict Target-Country Phone Verification & Region Alignment (Rule 1)
+    # 3. Strict Target-Country Phone Verification & Region Alignment
     disp_phone: Optional[str] = None
     phone_e164: Optional[str] = None
     verified_country_iso: Optional[str] = None
@@ -1224,7 +1249,7 @@ async def crawl_business_website(
             verified_country_iso = v_reg
             break
 
-    # Snippet Fallback if page had no phone link/text (Fix 3)
+    # Snippet Fallback if page had no phone link/text
     if not disp_phone or not phone_e164:
         snippet = candidate.get("snippet", "")
         if snippet:
@@ -1240,80 +1265,92 @@ async def crawl_business_website(
             except Exception:
                 pass
 
-    # Immediately discard candidate websites whose phone belongs to a foreign country code
-    if not disp_phone or not phone_e164:
-        return None
-
-    # 5. Email Extraction & Strict RFC Sanitization + Async MX Verification (Upgrade 3)
+    # 5. Email Extraction & Strict RFC Sanitization + Async MX Verification
     for em in re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', combined_text):
         raw_emails.append(em)
 
-    email, email_mx_verified, ranked_emails = await rank_and_verify_emails(raw_emails)
+    # Sovereign ccTLD validation on candidate emails
+    filtered_emails = [em for em in raw_emails if not is_cctld_mismatched(em, country_iso)]
+    email, email_mx_verified, ranked_emails = await rank_and_verify_emails(filtered_emails)
 
     # 6. Instagram Extraction
     ig_handle, ig_url = extract_instagram(combined_html, url)
 
+    # Multi-Channel Reachability Gatekeeper (Upgrade 3)
+    # Emit any real business that has at least one verified actionable outbound channel:
+    # (a) valid target-country phone_e164, OR
+    # (b) email_mx_verified business email, OR
+    # (c) live website paired with verified @instagram handle
+    has_valid_phone = bool(phone_e164 and disp_phone)
+    has_mx_email = bool(email and email_mx_verified)
+    has_verified_ig = bool(url and ig_handle)
+
+    if not (has_valid_phone or has_mx_email or has_verified_ig):
+        return None
+
     # 7. Address Extraction
-    address = None
-    for script in combined_soup.find_all("script", type="application/ld+json"):
-        if script.string:
-            try:
-                data = json.loads(script.string)
-                items = data if isinstance(data, list) else [data]
-                for it in items:
-                    if isinstance(it, dict) and "address" in it:
-                        addr_obj = it["address"]
-                        if isinstance(addr_obj, dict):
-                            parts = [
-                                addr_obj.get("streetAddress"),
-                                addr_obj.get("addressLocality") or city,
-                                addr_obj.get("postalCode"),
-                                addr_obj.get("addressCountry") or country_name,
-                            ]
-                            clean_parts = [str(p).strip() for p in parts if p]
-                            if clean_parts:
-                                address = ", ".join(clean_parts)
+    address = candidate.get("address")
+    if not address or address == city or address == f"{city}, {country_name}":
+        for script in combined_soup.find_all("script", type="application/ld+json"):
+            if script.string:
+                try:
+                    data = json.loads(script.string)
+                    items = data if isinstance(data, list) else [data]
+                    for it in items:
+                        if isinstance(it, dict) and "address" in it:
+                            addr_obj = it["address"]
+                            if isinstance(addr_obj, dict):
+                                parts = [
+                                    addr_obj.get("streetAddress"),
+                                    addr_obj.get("addressLocality") or city,
+                                    addr_obj.get("postalCode"),
+                                    addr_obj.get("addressCountry") or country_name,
+                                ]
+                                clean_parts = [str(p).strip() for p in parts if p]
+                                if clean_parts:
+                                    address = ", ".join(clean_parts)
+                                    break
+                            elif isinstance(addr_obj, str):
+                                address = addr_obj.strip()
                                 break
-                        elif isinstance(addr_obj, str):
-                            address = addr_obj.strip()
-                            break
-            except Exception:
-                pass
-        if address:
-            break
+                except Exception:
+                    pass
+            if address and address != city and address != f"{city}, {country_name}":
+                break
 
     if not address:
         address = f"{city}, {country_name}"
 
     # 8. Rating Extraction
-    rating: Optional[float] = None
-    for script in combined_soup.find_all("script", type="application/ld+json"):
-        if script.string:
-            try:
-                data = json.loads(script.string)
-                items = data if isinstance(data, list) else [data]
-                for it in items:
-                    if isinstance(it, dict) and "aggregateRating" in it:
-                        ar = it["aggregateRating"]
-                        if isinstance(ar, dict) and "ratingValue" in ar:
-                            val = float(ar["ratingValue"])
-                            if 1.0 <= val <= 5.0:
-                                rating = round(val, 1)
-                                break
-            except Exception:
-                pass
-        if rating is not None:
-            break
+    rating: Optional[float] = candidate.get("rating")
+    if rating is None:
+        for script in combined_soup.find_all("script", type="application/ld+json"):
+            if script.string:
+                try:
+                    data = json.loads(script.string)
+                    items = data if isinstance(data, list) else [data]
+                    for it in items:
+                        if isinstance(it, dict) and "aggregateRating" in it:
+                            ar = it["aggregateRating"]
+                            if isinstance(ar, dict) and "ratingValue" in ar:
+                                val = float(ar["ratingValue"])
+                                if 1.0 <= val <= 5.0:
+                                    rating = round(val, 1)
+                                    break
+                except Exception:
+                    pass
+            if rating is not None:
+                break
 
     # 9. Outbound Marketing & Tech Intelligence Signals (Upgrade 2)
     has_meta_pixel = detect_meta_pixel(html)
     has_google_ads = detect_google_ads(html)
     cms_platform = detect_cms_platform(html)
-    whatsapp_url = extract_whatsapp_url(html, phone_e164, is_whatsapp_ready=True)
+    whatsapp_url = extract_whatsapp_url(html, phone_e164, is_whatsapp_ready=True) if phone_e164 else ""
     linkedin_url = extract_linkedin_url(html)
 
     lead_score = calculate_lead_score(
-        has_phone=bool(phone_e164),
+        has_phone=has_valid_phone,
         has_whatsapp=bool(whatsapp_url),
         email=email,
         email_mx_verified=email_mx_verified,
@@ -1329,16 +1366,16 @@ async def crawl_business_website(
         "name": brand_name,
         "address": address,
         "rating": rating,
-        "phone": disp_phone,
-        "phone_e164": phone_e164,
-        "email": email,
-        "instagram_handle": ig_handle,
-        "instagram_url": ig_url,
+        "phone": disp_phone or "",
+        "phone_e164": phone_e164 or "",
+        "email": email or "",
+        "instagram_handle": ig_handle or None,
+        "instagram_url": ig_url or None,
         "website": url,
         "category": category.strip().title(),
         "city": city,
         "country_code": (verified_country_iso or country_iso).upper(),
-        "source": "live_web",
+        "source": candidate.get("source", "live_web"),
         # Outbound intelligence signals
         "has_meta_pixel": has_meta_pixel,
         "has_google_ads": has_google_ads,
@@ -1362,8 +1399,8 @@ def ensure_lead_intelligence(lead: dict, country_iso: str, country_name: str, ci
         lead["has_meta_pixel"] = False
     if "has_google_ads" not in lead:
         lead["has_google_ads"] = False
-    if "cms_platform" not in lead or not lead["cms_platform"]:
-        lead["cms_platform"] = "Custom"
+    if "cms_platform" not in lead:
+        lead["cms_platform"] = ""
     if "whatsapp_url" not in lead or not lead["whatsapp_url"]:
         lead["whatsapp_url"] = extract_whatsapp_url("", phone_e164, is_whatsapp_ready=True) if phone_e164 else ""
     if "linkedin_url" not in lead:
@@ -1389,7 +1426,7 @@ def ensure_lead_intelligence(lead: dict, country_iso: str, country_name: str, ci
 
 
 # ---------------------------------------------------------------------------
-# Core Extraction Async Generator (Strict Deduplication & Concurrency)
+# Core Extraction Async Generator (Producer-Consumer Async Queue Pipeline)
 # ---------------------------------------------------------------------------
 
 async def extract_leads(
@@ -1399,19 +1436,19 @@ async def extract_leads(
     star: int = 0,
     mode: str = "approx",
     bypass_cache: bool = False,
+    maps_api_key: Optional[str] = None,
+    stop_event: Optional[asyncio.Event] = None,
 ) -> AsyncIterator[dict]:
     """
     100% Genuine async generator for the Global B2B Lead Extractor.
     Streams verified real leads discovered live from the web.
     Guarantees:
-      - Multi-branch retention (up to 5 leads per root domain with distinct branches).
-      - Phone deduplication (exactly 1 lead per E.164 phone).
-      - Normalized (business_name, street_address) identity deduplication.
-      - 100% callable phone coverage aligned with target telecom country.
-      - Zero-extra-request marketing & tech signal extraction.
-      - Persistent SQLite storage with 7-day TTL and bypass_cache toggle.
-      - Real-time SSE status progress frames.
-      - Never emits synthetic data.
+      - Non-blocking Producer-Consumer asyncio.Queue architecture.
+      - Pluggable high-volume Maps API provider alongside free engines.
+      - Sovereign ccTLD & script geo alignment.
+      - Multi-channel reachability gatekeeper (phone, MX email, or IG).
+      - Phone & root domain deduplication locks.
+      - Zero synthetic records.
     """
     clean_cat = category.strip()
     cities = parse_multi_city(location)
@@ -1423,8 +1460,6 @@ async def extract_leads(
     seen_identities: Set[Tuple[str, str]] = set()
     seen_urls: Set[str] = set()
 
-    sem = asyncio.Semaphore(30)
-
     yield {
         "type": "status",
         "stage": "init",
@@ -1434,7 +1469,7 @@ async def extract_leads(
     }
 
     for city in cities:
-        if yielded_count >= total_target:
+        if yielded_count >= total_target or (stop_event and stop_event.is_set()):
             break
 
         city_clean = city.strip()
@@ -1445,6 +1480,7 @@ async def extract_leads(
         state_name = loc_profile.get("state", "")
         lat = float(loc_profile.get("lat") or 0.0)
         lon = float(loc_profile.get("lon") or 0.0)
+        districts = loc_profile.get("districts", [])
 
         # ── Tier 1: Check Persistent SQLite Store & JSON Cache First ────────
         if not bypass_cache:
@@ -1471,12 +1507,12 @@ async def extract_leads(
 
             cached_loaded_this_city = 0
             for raw_lead in filtered_cached:
-                if yielded_count >= total_target:
+                if yielded_count >= total_target or (stop_event and stop_event.is_set()):
                     break
 
                 phone_e164 = raw_lead.get("phone_e164")
                 root_dom = extract_root_domain(raw_lead.get("website", ""))
-                if not phone_e164 or phone_e164 in seen_phones:
+                if phone_e164 and phone_e164 in seen_phones:
                     continue
                 if root_dom and domain_crawl_counts[root_dom] >= 5:
                     continue
@@ -1487,16 +1523,21 @@ async def extract_leads(
                 if norm_name and norm_addr and identity_key in seen_identities:
                     continue
 
-                # Strict Target-Country Phone Alignment on Cached Leads (Rule 1)
-                e164, disp, _, v_reg = validate_and_format_phone(phone_e164, country_iso, target_iso=country_iso)
-                if not e164:
+                # Sovereign ccTLD Check on Cached Leads
+                if is_cctld_mismatched(raw_lead.get("website", ""), country_iso):
                     continue
-                raw_lead["country_code"] = (v_reg or country_iso).upper()
 
-                # Ensure intelligence signals exist
+                # Strict Target-Country Phone Alignment if phone is present
+                if phone_e164:
+                    e164, disp, _, v_reg = validate_and_format_phone(phone_e164, country_iso, target_iso=country_iso)
+                    if not e164:
+                        continue
+                    raw_lead["country_code"] = (v_reg or country_iso).upper()
+
                 raw_lead = ensure_lead_intelligence(raw_lead, country_iso, country_name, city_name)
 
-                seen_phones.add(phone_e164)
+                if phone_e164:
+                    seen_phones.add(phone_e164)
                 if norm_name and norm_addr:
                     seen_identities.add(identity_key)
                 if root_dom:
@@ -1515,7 +1556,6 @@ async def extract_leads(
                     "scanned": cached_loaded_this_city,
                     "verified": yielded_count,
                 }
-
         else:
             yield {
                 "type": "status",
@@ -1525,68 +1565,16 @@ async def extract_leads(
                 "verified": yielded_count,
             }
 
-        if yielded_count >= total_target:
+        if yielded_count >= total_target or (stop_event and stop_event.is_set()):
             break
 
-        # ── Tier 2A: OpenStreetMap Overpass Spatial Discovery (Fix 3) ─────
+        # ── Tier 2: Producer-Consumer Streaming Pipeline ────────────────────
+        candidate_queue: asyncio.Queue[Optional[dict]] = asyncio.Queue(maxsize=400)
+        output_queue: asyncio.Queue[Optional[dict]] = asyncio.Queue()
+        internal_stop = asyncio.Event()
+        producers_done = asyncio.Event()
         new_leads_for_cache: List[dict] = []
-        osm_cands: List[Dict[str, str]] = []
 
-        if lat != 0.0 and lon != 0.0:
-            yield {
-                "type": "status",
-                "stage": "spatial",
-                "message": f"Scanning OpenStreetMap spatial nodes in {city_name} ({lat:.2f}, {lon:.2f})...",
-                "scanned": 0,
-                "verified": yielded_count,
-            }
-            try:
-                osm_leads, osm_cands = await search_overpass_spatial(
-                    clean_cat, lat, lon, city_name, country_iso, country_name
-                )
-                for ol in osm_leads:
-                    if yielded_count >= total_target:
-                        break
-                    phone_e164 = ol.get("phone_e164")
-                    if not phone_e164 or phone_e164 in seen_phones:
-                        continue
-
-                    norm_name = re.sub(r"\W+", "", ol.get("name", "").lower())
-                    norm_addr = re.sub(r"\W+", "", ol.get("address", "").lower())
-                    identity_key = (norm_name, norm_addr)
-                    if norm_name and norm_addr and identity_key in seen_identities:
-                        continue
-
-                    root_dom = extract_root_domain(ol.get("website", ""))
-                    if root_dom and domain_crawl_counts[root_dom] >= 5:
-                        continue
-
-                    ol = ensure_lead_intelligence(ol, country_iso, country_name, city_name)
-                    seen_phones.add(phone_e164)
-                    if norm_name and norm_addr:
-                        seen_identities.add(identity_key)
-                    if root_dom:
-                        domain_crawl_counts[root_dom] += 1
-
-                    yielded_count += 1
-                    new_leads_for_cache.append(ol)
-                    save_lead_to_db(ol)
-                    yield ol
-                    await asyncio.sleep(0.01)
-            except Exception as exc:
-                logger.debug("Overpass spatial discovery error: %s", exc)
-
-        if yielded_count >= total_target:
-            if new_leads_for_cache:
-                try:
-                    save_to_cache(clean_cat, city_clean, new_leads_for_cache)
-                    save_leads_batch(new_leads_for_cache)
-                except Exception as exc:
-                    logger.debug("Cache auto-save error: %s", exc)
-            break
-
-        # ── Tier 2B: Multi-Engine Search Discovery & Deep Crawl in Waves (Fix 4) ─
-        districts = loc_profile.get("districts", [])
         query_waves = generate_query_waves(
             category=clean_cat,
             city=city_name,
@@ -1596,140 +1584,245 @@ async def extract_leads(
         )
 
         async with make_client(country_iso=country_iso, timeout=4.0) as client:
-            for wave_idx, wave_queries in enumerate(query_waves, 1):
-                if yielded_count >= total_target:
-                    break
+            sem = asyncio.Semaphore(30)
 
-                yield {
-                    "type": "status",
-                    "stage": "discovery",
-                    "message": f"Wave {wave_idx}/{len(query_waves)}: Querying Bing, Yahoo & DuckDuckGo for {city_name}...",
-                    "scanned": 0,
-                    "verified": yielded_count,
-                }
-
-                # Fan out search queries across Yahoo, Bing, and DDG simultaneously (Fix 4)
-                search_tasks = []
-                for q in wave_queries:
-                    search_tasks.append(search_yahoo(q, max_pages=2))
-                    search_tasks.append(search_bing(q, max_pages=2))
-                    if DDGS:
-                        search_tasks.append(search_ddg(q, max_results=15))
-
-                search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
-
-                candidate_list: List[Dict[str, str]] = []
-
-                # Include any uncrawled OSM candidates on the first wave
-                if osm_cands:
-                    for oc in osm_cands:
-                        url = oc.get("url", "")
-                        if not url or url in seen_urls:
-                            continue
-                        root_dom = oc.get("root_domain") or extract_root_domain(url)
-                        if not root_dom or domain_crawl_counts[root_dom] >= 5:
-                            continue
-                        seen_urls.add(url)
-                        candidate_list.append(oc)
-                    osm_cands = []
-
-                for res in search_results:
-                    if isinstance(res, list):
-                        for cand in res:
-                            url = cand.get("url", "")
-                            if not url or url in seen_urls:
-                                continue
-                            root_dom = cand.get("root_domain") or extract_root_domain(url)
-                            if not root_dom or domain_crawl_counts[root_dom] >= 5:
-                                continue
-                            seen_urls.add(url)
-                            candidate_list.append(cand)
-
-                if not candidate_list:
-                    continue
-
-                yield {
-                    "type": "status",
-                    "stage": "crawling",
-                    "message": f"Wave {wave_idx}/{len(query_waves)}: Fingerprinting {len(candidate_list)} business sites with HTTP/2...",
-                    "scanned": len(candidate_list),
-                    "verified": yielded_count,
-                }
-
-                # Prioritize country-specific TLDs (Rule 4: .it, .fr, .de, .co.uk, .ae, etc.)
-                candidate_list.sort(
-                    key=lambda c: tld_priority_score(c["url"], country_iso),
-                    reverse=True,
-                )
-
-                async def process_candidate(cand):
-                    async with sem:
-                        return await crawl_business_website(
-                            client, cand, clean_cat, city_name, state_name, country_iso, country_name
-                        )
-
-                crawl_tasks = [process_candidate(cand) for cand in candidate_list]
-                crawl_results = await asyncio.gather(*crawl_tasks, return_exceptions=True)
-
-                for res in crawl_results:
-                    if yielded_count >= total_target:
-                        break
-                    if not isinstance(res, dict) or not res:
-                        continue
-
-                    phone_e164 = res.get("phone_e164")
-                    root_dom = extract_root_domain(res.get("website", ""))
-
-                    # Strict Contact & Multi-Branch Gatekeeper (Fix 2)
-                    if not phone_e164 or phone_e164 in seen_phones:
-                        continue
+            async def push_candidate(cand: dict):
+                if internal_stop.is_set():
+                    return
+                url = cand.get("url", "")
+                if url:
+                    if url in seen_urls:
+                        return
+                    if is_cctld_mismatched(url, country_iso):
+                        return
+                    root_dom = cand.get("root_domain") or extract_root_domain(url)
                     if root_dom and domain_crawl_counts[root_dom] >= 5:
+                        return
+                    seen_urls.add(url)
+                elif not (cand.get("source") == "maps_boost" and cand.get("phone")):
+                    return
+
+                try:
+                    await asyncio.wait_for(candidate_queue.put(cand), timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+            # Producer 1: Maps Boost (Serper Places)
+            async def maps_producer():
+                key = maps_api_key or os.environ.get("SERPER_API_KEY", "")
+                key = key.strip() if key else ""
+                if not key:
+                    return
+                try:
+                    await output_queue.put({
+                        "type": "status",
+                        "stage": "maps_boost",
+                        "message": f"Maps Boost Active: Querying Google Maps for {clean_cat} in {city_name}...",
+                        "scanned": 0,
+                        "verified": yielded_count,
+                    })
+                    maps_cands = await harvest_maps_candidates(
+                        category=clean_cat,
+                        city=city_name,
+                        target_iso=country_iso,
+                        maps_api_key=key,
+                        districts=districts,
+                    )
+                    for mc in maps_cands:
+                        if internal_stop.is_set():
+                            break
+                        await push_candidate(mc)
+                except Exception as exc:
+                    logger.debug("Maps producer error: %s", exc)
+
+            # Producer 2: OpenStreetMap Spatial Nodes
+            async def osm_producer():
+                if lat == 0.0 or lon == 0.0:
+                    return
+                try:
+                    await output_queue.put({
+                        "type": "status",
+                        "stage": "spatial",
+                        "message": f"Scanning OpenStreetMap spatial nodes in {city_name} ({lat:.2f}, {lon:.2f})...",
+                        "scanned": 0,
+                        "verified": yielded_count,
+                    })
+                    osm_leads, osm_cands = await search_overpass_spatial(
+                        clean_cat, lat, lon, city_name, country_iso, country_name
+                    )
+                    for ol in osm_leads:
+                        if internal_stop.is_set():
+                            break
+                        ol = ensure_lead_intelligence(ol, country_iso, country_name, city_name)
+                        await output_queue.put(ol)
+                    for oc in osm_cands:
+                        if internal_stop.is_set():
+                            break
+                        await push_candidate(oc)
+                except Exception as exc:
+                    logger.debug("OSM producer error: %s", exc)
+
+            # Producer 3: Multi-Engine Web Search (Bing, Yahoo, DDG)
+            async def search_producer():
+                try:
+                    for wave_idx, wave_queries in enumerate(query_waves, 1):
+                        if internal_stop.is_set():
+                            break
+                        await output_queue.put({
+                            "type": "status",
+                            "stage": "discovery",
+                            "message": f"Wave {wave_idx}/{len(query_waves)}: Querying Bing, Yahoo & DuckDuckGo for {city_name}...",
+                            "scanned": len(seen_urls),
+                            "verified": yielded_count,
+                        })
+                        tasks = []
+                        for q in wave_queries:
+                            tasks.append(search_yahoo(q, max_pages=2))
+                            tasks.append(search_bing(q, max_pages=2))
+                            if DDGS:
+                                tasks.append(search_ddg(q, max_results=15))
+                        results = await asyncio.gather(*tasks, return_exceptions=True)
+                        for res in results:
+                            if not isinstance(res, list):
+                                continue
+                            for cand in res:
+                                if internal_stop.is_set():
+                                    break
+                                await push_candidate(cand)
+                        await asyncio.sleep(0.2)
+                except Exception as exc:
+                    logger.debug("Search producer error: %s", exc)
+
+            async def run_producers():
+                ptasks = [
+                    asyncio.create_task(maps_producer()),
+                    asyncio.create_task(osm_producer()),
+                    asyncio.create_task(search_producer()),
+                ]
+                await asyncio.gather(*ptasks, return_exceptions=True)
+                producers_done.set()
+
+            # Consumer Workers
+            async def consumer_worker():
+                while not internal_stop.is_set():
+                    try:
+                        cand = await asyncio.wait_for(candidate_queue.get(), timeout=0.8)
+                    except asyncio.TimeoutError:
+                        if producers_done.is_set() and candidate_queue.empty():
+                            break
                         continue
 
-                    norm_name = re.sub(r"\W+", "", res.get("name", "").lower())
-                    norm_addr = re.sub(r"\W+", "", res.get("address", "").lower())
+                    if cand is None:
+                        candidate_queue.task_done()
+                        break
+
+                    try:
+                        url = cand.get("url", "")
+                        if url and is_cctld_mismatched(url, country_iso):
+                            continue
+                        async with sem:
+                            lead = await crawl_business_website(
+                                client, cand, clean_cat, city_name, state_name, country_iso, country_name
+                            )
+                        if lead:
+                            # Apply star rating filter if configured
+                            if star > 0 and lead.get("rating") is not None:
+                                lead_r = float(lead["rating"])
+                                if mode == "exact":
+                                    if round(lead_r) != star:
+                                        lead = None
+                                else:
+                                    if not (max(1.0, star - 0.5) <= lead_r <= min(5.0, star + 0.5)):
+                                        lead = None
+                            if lead:
+                                await output_queue.put(lead)
+                    except Exception as exc:
+                        logger.debug("Consumer worker error: %s", exc)
+                    finally:
+                        candidate_queue.task_done()
+
+            # Start background producers supervisor
+            producer_supervisor = asyncio.create_task(run_producers())
+
+            # Spawn 25 concurrent consumer workers
+            worker_tasks = [asyncio.create_task(consumer_worker()) for _ in range(25)]
+
+            # Output Queue Consumer (Generator Yield Loop)
+            try:
+                while yielded_count < total_target and not internal_stop.is_set():
+                    if stop_event and stop_event.is_set():
+                        internal_stop.set()
+                        break
+
+                    try:
+                        item = await asyncio.wait_for(output_queue.get(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        if producers_done.is_set() and candidate_queue.empty() and all(w.done() for w in worker_tasks):
+                            break
+                        continue
+
+                    if not isinstance(item, dict):
+                        continue
+
+                    # Status telemetry frame
+                    if item.get("type") == "status":
+                        yield item
+                        await asyncio.sleep(0)
+                        continue
+
+                    # Lead validation and deduplication
+                    phone_e164 = item.get("phone_e164")
+                    if phone_e164 and phone_e164 in seen_phones:
+                        continue
+
+                    norm_name = re.sub(r"\W+", "", item.get("name", "").lower())
+                    norm_addr = re.sub(r"\W+", "", item.get("address", "").lower())
                     identity_key = (norm_name, norm_addr)
                     if norm_name and norm_addr and identity_key in seen_identities:
                         continue
 
-                    # Apply rating filter if lead has a rating
-                    if star > 0 and res.get("rating") is not None:
-                        lead_r = float(res["rating"])
-                        if mode == "exact":
-                            if round(lead_r) != star:
-                                continue
-                        else:
-                            if not (max(1.0, star - 0.5) <= lead_r <= min(5.0, star + 0.5)):
-                                continue
+                    root_dom = extract_root_domain(item.get("website", ""))
+                    if root_dom and domain_crawl_counts[root_dom] >= 5:
+                        continue
 
-                    seen_phones.add(phone_e164)
+                    # Deduplication locks
+                    if phone_e164:
+                        seen_phones.add(phone_e164)
                     if norm_name and norm_addr:
                         seen_identities.add(identity_key)
                     if root_dom:
                         domain_crawl_counts[root_dom] += 1
 
                     yielded_count += 1
-                    new_leads_for_cache.append(res)
-                    save_lead_to_db(res)
-                    yield res
+                    new_leads_for_cache.append(item)
+                    save_lead_to_db(item)
+                    yield item
 
                     if yielded_count % 3 == 0:
                         yield {
                             "type": "status",
                             "stage": "verified",
-                            "message": f"Verified {yielded_count}/{total_target} leads ({res.get('name', 'Lead')})",
-                            "scanned": len(candidate_list),
+                            "message": f"Verified {yielded_count}/{total_target} leads ({item.get('name', 'Lead')})",
+                            "scanned": len(seen_urls),
                             "verified": yielded_count,
                         }
                     await asyncio.sleep(0.01)
 
-        # Persist newly verified genuine leads to cache and SQLite batch
-        if new_leads_for_cache:
-            try:
-                save_to_cache(clean_cat, city_clean, new_leads_for_cache)
-                save_leads_batch(new_leads_for_cache)
-            except Exception as exc:
-                logger.debug("Cache auto-save error: %s", exc)
+            finally:
+                # Instant Cancellation of all producers and workers
+                internal_stop.set()
+                producer_supervisor.cancel()
+                for w in worker_tasks:
+                    w.cancel()
+                await asyncio.gather(producer_supervisor, *worker_tasks, return_exceptions=True)
+
+            # Persist newly verified leads to cache and SQLite batch
+            if new_leads_for_cache:
+                try:
+                    save_to_cache(clean_cat, city_clean, new_leads_for_cache)
+                    save_leads_batch(new_leads_for_cache)
+                except Exception as exc:
+                    logger.debug("Cache auto-save error: %s", exc)
 
     yield {
         "type": "status",
