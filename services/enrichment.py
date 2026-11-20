@@ -695,3 +695,68 @@ def calculate_lead_score(
         score += 10
 
     return max(0, min(100, score))
+
+
+# ---------------------------------------------------------------------------
+# Intra-Country & Cross-Country Address Verification (Fix 2)
+# ---------------------------------------------------------------------------
+
+FOREIGN_COUNTRY_NAMES: Dict[str, Set[str]] = {
+    "US": {"united kingdom", "uk", "great britain", "france", "germany", "italy", "spain", "canada", "australia", "india", "deutschland", "espana", "italia"},
+    "GB": {"united states", "usa", "u.s.a.", "france", "germany", "italy", "spain", "canada", "australia", "india", "deutschland", "espana", "italia"},
+    "FR": {"united states", "usa", "united kingdom", "uk", "germany", "allemagne", "italy", "italie", "espagne", "spain", "india", "inde", "canada", "australia"},
+    "IT": {"united states", "usa", "united kingdom", "uk", "germany", "germania", "france", "francia", "spagna", "spain", "india", "canada", "australia"},
+    "DE": {"united states", "usa", "united kingdom", "uk", "frankreich", "italien", "spanien", "france", "italy", "spain", "india", "canada", "australia"},
+    "IN": {"united states", "usa", "united kingdom", "uk", "france", "germany", "italy", "spain", "canada", "australia"},
+    "CA": {"united kingdom", "uk", "france", "germany", "italy", "spain", "australia", "india"},
+    "AU": {"united states", "usa", "united kingdom", "uk", "france", "germany", "italy", "spain", "canada", "india"},
+}
+
+
+def is_generic_country_address(address: str, country_name: str, country_iso: str) -> bool:
+    """
+    Check if an address is merely a bare country name, state, or ISO code with no local street/city details.
+    """
+    if not address:
+        return True
+    addr_clean = re.sub(r"[,\s\.-]+", " ", address.strip()).lower().strip()
+    c_clean = re.sub(r"[,\s\.-]+", " ", country_name.strip()).lower().strip()
+    iso_clean = country_iso.strip().lower()
+
+    if addr_clean in (c_clean, iso_clean, "united states", "usa", "united kingdom", "uk", "us", "india", "france", "germany", "italy", "spain"):
+        return True
+    return False
+
+
+def is_address_contradicting_target_country(address: str, country_iso: str, country_name: str) -> bool:
+    """
+    Detect if an address explicitly contains another sovereign nation's name or postal format,
+    contradicting the intended target country.
+    """
+    if not address:
+        return False
+    iso = (country_iso or "").upper().strip()
+    if iso == "UK":
+        iso = "GB"
+
+    addr_lower = address.lower()
+
+    # Check foreign country name contradiction
+    foreign_names = FOREIGN_COUNTRY_NAMES.get(iso, set())
+    for f_name in foreign_names:
+        if re.search(rf"\b{re.escape(f_name)}\b", addr_lower):
+            return True
+
+    # Foreign postal format check
+    # US zip format: 2-letter state code + 5-digit zip, e.g. "TX 75201" or "FL 33139"
+    if iso != "US":
+        if re.search(r'\b(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\s+\d{5}(?:-\d{4})?\b', address):
+            return True
+
+    # UK postal format in non-UK address
+    if iso not in ("GB", "UK"):
+        if re.search(r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', address):
+            return True
+
+    return False
+

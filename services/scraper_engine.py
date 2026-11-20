@@ -54,6 +54,8 @@ from services.enrichment import (
     is_cctld_mismatched,
     is_script_or_lang_mismatched,
     extract_domain_cctld,
+    is_generic_country_address,
+    is_address_contradicting_target_country,
 )
 from services.maps_provider import harvest_maps_candidates
 from services.storage import (
@@ -192,6 +194,42 @@ NON_BUSINESS_PATH_PATTERNS = re.compile(
 EDITORIAL_TITLE_PREFIXES = re.compile(
     r'(?i)(?:^(?:directory\s+of|list\s+of|the\s+history\s+of|history\s+of|how\s+to|top\s*\d+|best\s+\d+|best\s+of|reviews\s+of|the\s+\d+\s+best|\d+\s+best|\d+\s+top|\d+\s+places|\d+\s+things)\b|\b(?:b2b\s+marketplace|business\s+directory|yellow\s+pages|top\s*\d+\s+best|ranking)\b)'
 )
+
+# ---------------------------------------------------------------------------
+# Search Engine Sponsored / Ad Click-Tracker Filtering (Fix 1)
+# ---------------------------------------------------------------------------
+
+SPONSORED_TRACKER_DOMAINS: Set[str] = {
+    "googleadservices.com", "doubleclick.net", "adnxs.com", "criteo.com",
+    "clickserve.dartsearch.net", "ad.doubleclick.net", "syndication.twitter.com",
+    "advertising.com", "bingads.microsoft.com", "bat.bing.com", "outbrain.com", "taboola.com",
+}
+
+SPONSORED_URL_PATTERNS = re.compile(
+    r'(?i)(?:[?&](?:gclid|gbraid|wbraid|fbclid|msclkid|ad_url|adclick|adservice)=|bing\.com/aclick|r\.msn\.com/|search\.yahoo\.com/yhs/|googleadservices\.com/|doubleclick\.net/|ad\.doubleclick)'
+)
+
+
+def is_ad_or_sponsored_tracker(url: str, title: str = "") -> bool:
+    """
+    Detect whether a candidate URL or search entry is a sponsored ad, click tracker, or ad redirect.
+    """
+    if not url:
+        return True
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc.lower()
+        if any(ad_dom in netloc for ad_dom in SPONSORED_TRACKER_DOMAINS):
+            return True
+        if SPONSORED_URL_PATTERNS.search(url):
+            return True
+    except Exception:
+        pass
+    if title:
+        t_low = title.lower()
+        if re.search(r'(?i)\b(?:sponsored|ad\s*[\:\-]|advertisement)\b', t_low):
+            return True
+    return False
 
 # ---------------------------------------------------------------------------
 # Cache Management (SQLite Storage Layer Delegation)
@@ -594,13 +632,14 @@ def verify_local_geo_alignment(
     loc_profile: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, bool]:
     """
-    Intra-Country Locality Verification (Fix 1):
-    Prevents cross-city false positives within the same country (e.g. Dallas businesses appearing in Miami).
+    Intra-Country Locality Verification (Fix 1 & Fix 2):
+    Prevents cross-city false positives within the same country (e.g. Dallas businesses appearing in Miami)
+    and enforces mandatory locality confirmation for city-, borough-, or hub-level queries.
 
     Returns:
         (is_valid, local_presence_confirmed)
         - is_valid: True if candidate does NOT contradict the requested location. False if it explicitly belongs
-                    to a conflicting municipality within the same country.
+                    to a conflicting municipality, foreign country, or lacks required locality evidence for a city search.
         - local_presence_confirmed: True if the queried city, its known districts, postal codes, or area codes
                     were positively identified in the page content, title, snippet, or address.
     """
@@ -613,11 +652,25 @@ def verify_local_geo_alignment(
         return True, False
 
     # Check if query was national or state-wide (e.g. "Texas", "France", "United States")
+    is_city_query = True
+    p_country = ""
     if loc_profile:
         p_country = (loc_profile.get("country_name") or "").lower().strip()
         p_state = (loc_profile.get("state") or "").lower().strip()
         if target_city in (p_country, p_state) or (p_state and target_city == p_state.lower()):
-            return True, False
+            is_city_query = False
+
+    # If address explicitly contradicts target sovereign nation, reject immediately
+    if extracted_address and is_address_contradicting_target_country(extracted_address, country_key, p_country):
+        logger.debug(
+            "Geo conflict: extracted_address '%s' contradicts target country '%s'",
+            extracted_address, country_key
+        )
+        return False, False
+
+    if not is_city_query:
+        # Nationwide or statewide query: general country-level matching is sufficient
+        return True, False
 
     # Assemble local positive markers
     markers: Set[str] = {target_city}
@@ -633,7 +686,8 @@ def verify_local_geo_alignment(
                 markers.add(ac.strip().lower())
 
     # Search blob for local presence confirmation
-    search_blob = f"{url} {title} {extracted_address} {snippet} {crawled_text[:15000]}".lower()
+    netloc = urlparse(url).netloc.lower() if url else ""
+    search_blob = f"{netloc} {url} {title} {extracted_address} {snippet} {crawled_text[:15000]}".lower()
 
     local_confirmed = False
     for m in markers:
@@ -649,7 +703,7 @@ def verify_local_geo_alignment(
 
     # Detect conflicting major cities within the same country
     major_cities = MAJOR_CITIES_BY_COUNTRY.get(country_key, set())
-    high_priority_blob = f"{title} {extracted_address} {urlparse(url).netloc}".lower()
+    high_priority_blob = f"{title} {extracted_address} {netloc}".lower()
 
     for other_city in major_cities:
         if other_city == target_city or other_city in markers:
@@ -665,6 +719,16 @@ def verify_local_geo_alignment(
                     target_city,
                 )
                 return False, False
+
+    # Mandatory Locality Confirmation for city-level queries (Fix 2):
+    # Require explicit locality evidence before accepting a lead for a city search
+    if is_city_query and not local_confirmed:
+        logger.debug("Mandatory locality confirmation failed for city query '%s'", target_city)
+        return False, False
+
+    # Reject if address is merely a generic country name and locality is not confirmed
+    if is_city_query and is_generic_country_address(extracted_address, p_country, country_key) and not local_confirmed:
+        return False, False
 
     return True, local_confirmed
 
@@ -864,26 +928,107 @@ def decode_bing_url(url: str, cite_text: str = "") -> str:
     return url
 
 
-async def search_yahoo(query: str, max_pages: int = 2) -> List[Dict[str, str]]:
+# ---------------------------------------------------------------------------
+# Multi-Engine Geo-Pinned Search Mappings (Fix 1)
+# ---------------------------------------------------------------------------
+
+BING_MKT_MAP: Dict[str, Tuple[str, str, str]] = {
+    # iso: (cc, setmkt, setlang)
+    "US": ("US", "en-US", "en"),
+    "GB": ("GB", "en-GB", "en"),
+    "UK": ("GB", "en-GB", "en"),
+    "FR": ("FR", "fr-FR", "fr"),
+    "DE": ("DE", "de-DE", "de"),
+    "IT": ("IT", "it-IT", "it"),
+    "ES": ("ES", "es-ES", "es"),
+    "CA": ("CA", "en-CA", "en"),
+    "AU": ("AU", "en-AU", "en"),
+    "IN": ("IN", "en-IN", "en"),
+    "AE": ("AE", "ar-AE", "ar"),
+    "SG": ("SG", "en-SG", "en"),
+    "NZ": ("NZ", "en-NZ", "en"),
+    "CH": ("CH", "de-CH", "de"),
+    "NL": ("NL", "nl-NL", "nl"),
+    "BE": ("BE", "nl-BE", "nl"),
+    "AT": ("AT", "de-AT", "de"),
+    "JP": ("JP", "ja-JP", "ja"),
+    "BR": ("BR", "pt-BR", "pt"),
+    "MX": ("MX", "es-MX", "es"),
+    "ZA": ("ZA", "en-ZA", "en"),
+    "IE": ("IE", "en-IE", "en"),
+}
+
+YAHOO_HOST_MAP: Dict[str, str] = {
+    "GB": "uk.search.yahoo.com",
+    "UK": "uk.search.yahoo.com",
+    "FR": "fr.search.yahoo.com",
+    "DE": "de.search.yahoo.com",
+    "IT": "it.search.yahoo.com",
+    "ES": "es.search.yahoo.com",
+    "CA": "ca.search.yahoo.com",
+    "AU": "au.search.yahoo.com",
+    "IN": "in.search.yahoo.com",
+    "SG": "sg.search.yahoo.com",
+    "BR": "br.search.yahoo.com",
+    "MX": "espanol.search.yahoo.com",
+    "US": "search.yahoo.com",
+}
+
+DDG_REGION_MAP: Dict[str, str] = {
+    "US": "us-en",
+    "GB": "uk-en",
+    "UK": "uk-en",
+    "FR": "fr-fr",
+    "DE": "de-de",
+    "IT": "it-it",
+    "ES": "es-es",
+    "CA": "ca-en",
+    "AU": "au-en",
+    "IN": "in-en",
+    "AE": "xa-ar",
+    "SG": "sg-en",
+    "NZ": "nz-en",
+    "CH": "ch-de",
+    "NL": "nl-nl",
+    "BE": "be-nl",
+    "AT": "at-de",
+    "JP": "jp-jp",
+    "BR": "br-pt",
+    "MX": "mx-es",
+    "ZA": "za-en",
+    "IE": "ie-en",
+}
+
+
+async def search_yahoo(query: str, country_iso: str = "US", max_pages: int = 2) -> List[Dict[str, str]]:
     """
-    Scrape Yahoo Search for organic business results with RU redirect decoding.
-    Captures search snippet for fallback phone/contact enrichment (Fix 3).
+    Scrape Yahoo Search for organic business results with RU redirect decoding and explicit geo-pinning.
+    Captures search snippet for fallback phone/contact enrichment. Strips sponsored trackers.
     """
     candidates: List[Dict[str, str]] = []
     seen_urls: Set[str] = set()
+
+    iso = (country_iso or "").upper().strip()
+    if iso == "UK":
+        iso = "GB"
+    yahoo_host = YAHOO_HOST_MAP.get(iso, "search.yahoo.com")
+    yahoo_url = f"https://{yahoo_host}/search"
+
+    lang_info = BING_MKT_MAP.get(iso, ("US", "en-US", "en"))
+    locale_lang = f"{lang_info[1]},{lang_info[2]};q=0.9,en;q=0.8"
 
     async with SEARCH_SEMAPHORE:
         await asyncio.sleep(random.uniform(0.15, 0.35))
         headers = {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Language": locale_lang,
         }
         try:
             async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=5.0) as client:
                 for page in range(max_pages):
                     start = page * 10 + 1
-                    resp = await client.get("https://search.yahoo.com/search", params={"p": query, "b": start})
+                    resp = await client.get(yahoo_url, params={"p": query, "b": start})
                     if resp.status_code != 200:
                         break
 
@@ -899,6 +1044,8 @@ async def search_yahoo(query: str, max_pages: int = 2) -> List[Dict[str, str]]:
                         url = decode_yahoo_url(raw_url)
 
                         if not url.startswith("http") or "aclick" in url or "yahoo.com" in url:
+                            continue
+                        if is_ad_or_sponsored_tracker(url, title):
                             continue
                         if is_directory_or_junk(url, title):
                             continue
@@ -926,26 +1073,38 @@ async def search_yahoo(query: str, max_pages: int = 2) -> List[Dict[str, str]]:
     return candidates
 
 
-async def search_bing(query: str, max_pages: int = 2) -> List[Dict[str, str]]:
+async def search_bing(query: str, country_iso: str = "US", max_pages: int = 2) -> List[Dict[str, str]]:
     """
-    Scrape Bing Search for organic business results with base64 redirect decoding.
-    Captures search snippet for fallback phone/contact enrichment (Fix 3 & Fix 4).
+    Scrape Bing Search for organic business results with base64 redirect decoding and explicit geo-pinning.
+    Captures search snippet for fallback phone/contact enrichment. Strips sponsored trackers.
     """
     candidates: List[Dict[str, str]] = []
     seen_urls: Set[str] = set()
+
+    iso = (country_iso or "").upper().strip()
+    if iso == "UK":
+        iso = "GB"
+    cc, setmkt, setlang = BING_MKT_MAP.get(iso, ("US", "en-US", "en"))
 
     async with SEARCH_SEMAPHORE:
         await asyncio.sleep(random.uniform(0.15, 0.35))
         headers = {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Language": f"{setmkt},{setlang};q=0.9,en;q=0.8",
         }
         try:
             async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=5.0) as client:
                 for page in range(max_pages):
                     start = page * 10 + 1
-                    resp = await client.get("https://www.bing.com/search", params={"q": query, "first": start})
+                    params = {
+                        "q": query,
+                        "first": start,
+                        "cc": cc,
+                        "setmkt": setmkt,
+                        "setlang": setlang,
+                    }
+                    resp = await client.get("https://www.bing.com/search", params=params)
                     if resp.status_code != 200:
                         break
 
@@ -963,6 +1122,8 @@ async def search_bing(query: str, max_pages: int = 2) -> List[Dict[str, str]]:
                         if not url.startswith("http") or "bing.com" in url:
                             continue
                         title = a.get_text(strip=True)
+                        if is_ad_or_sponsored_tracker(url, title):
+                            continue
                         if is_directory_or_junk(url, title):
                             continue
 
@@ -988,11 +1149,16 @@ async def search_bing(query: str, max_pages: int = 2) -> List[Dict[str, str]]:
     return candidates
 
 
-async def search_ddg(query: str, max_results: int = 15) -> List[Dict[str, str]]:
-    """Query DuckDuckGo for organic business results (Fix 4)."""
+async def search_ddg(query: str, country_iso: str = "US", max_results: int = 15) -> List[Dict[str, str]]:
+    """Query DuckDuckGo for organic business results with explicit region pinning."""
     candidates: List[Dict[str, str]] = []
     if not DDGS:
         return candidates
+
+    iso = (country_iso or "").upper().strip()
+    if iso == "UK":
+        iso = "GB"
+    region = DDG_REGION_MAP.get(iso, "wt-wt")
 
     async with SEARCH_SEMAPHORE:
         await asyncio.sleep(random.uniform(0.15, 0.35))
@@ -1000,13 +1166,13 @@ async def search_ddg(query: str, max_results: int = 15) -> List[Dict[str, str]]:
             loop = asyncio.get_running_loop()
             def do_ddg():
                 with DDGS() as ddgs:
-                    return list(ddgs.text(query, max_results=max_results))
+                    return list(ddgs.text(query, region=region, max_results=max_results))
             results = await loop.run_in_executor(None, do_ddg)
             for r in results:
                 url = r.get("href", "")
                 title = r.get("title", "")
                 snippet = r.get("body", "")
-                if not url.startswith("http") or is_directory_or_junk(url, title):
+                if not url.startswith("http") or is_ad_or_sponsored_tracker(url, title) or is_directory_or_junk(url, title):
                     continue
                 root_dom = extract_root_domain(url)
                 if not root_dom:
@@ -1261,14 +1427,8 @@ async def crawl_business_website(
         email, mx_verified, _ = await rank_and_verify_emails(valid_ems)
         wa_url = extract_whatsapp_url("", e164, is_whatsapp_ready=is_wa_ready) if e164 else ""
 
-        # Multi-Channel Reachability Gatekeeper
-        has_phone = bool(e164 and disp)
-        has_mx_email = bool(email and mx_verified)
-        has_ig = bool(url and candidate.get("instagram_handle"))
-        if not (has_phone or has_mx_email or has_ig):
-            return None
-
         # Address stamping: never stamp {queried_city}, {country} unless local presence verified
+        p_cname = loc_profile.get("country_name", country_name) if loc_profile else country_name
         if cand_addr:
             address_to_use = cand_addr
         elif local_confirmed:
@@ -1276,12 +1436,26 @@ async def crawl_business_website(
         else:
             address_to_use = country_name
 
+        # Minimum Reachability Floor (Fix 3):
+        # Require phone_e164 OR email_mx_verified OR (confirmed street address + @instagram)
+        has_phone = bool(e164 and disp)
+        has_mx_email = bool(email and mx_verified)
+        has_street_address = bool(
+            address_to_use
+            and not is_generic_country_address(address_to_use, p_cname, country_iso)
+            and address_to_use.strip().lower() != city.strip().lower()
+            and address_to_use.strip().lower() != f"{city}, {country_name}".strip().lower()
+        )
+        has_reach_ig = bool(candidate.get("instagram_handle") and has_street_address and local_confirmed)
+        if not (has_phone or has_mx_email or has_reach_ig):
+            return None
+
         score = calculate_lead_score(
             has_phone=has_phone,
             has_whatsapp=bool(wa_url),
             email=email,
             email_mx_verified=mx_verified,
-            has_instagram=has_ig,
+            has_instagram=bool(candidate.get("instagram_handle")),
             address=address_to_use,
             city=city,
             country_name=country_name,
@@ -1471,18 +1645,9 @@ async def crawl_business_website(
 
     # 6. Instagram Extraction
     ig_handle, ig_url = extract_instagram(combined_html, url)
-
-    # Multi-Channel Reachability Gatekeeper (Upgrade 3)
-    # Emit any real business that has at least one verified actionable outbound channel:
-    # (a) valid target-country phone_e164, OR
-    # (b) email_mx_verified business email, OR
-    # (c) live website paired with verified @instagram handle
-    has_valid_phone = bool(phone_e164 and disp_phone)
-    has_mx_email = bool(email and email_mx_verified)
-    has_verified_ig = bool(url and ig_handle)
-
-    if not (has_valid_phone or has_mx_email or has_verified_ig):
-        return None
+    if not ig_handle and candidate.get("instagram_handle"):
+        ig_handle = candidate["instagram_handle"]
+        ig_url = candidate.get("instagram_url")
 
     # 7. Address Extraction
     address = candidate.get("address")
@@ -1514,7 +1679,11 @@ async def crawl_business_website(
             if address and address != city and address != f"{city}, {country_name}":
                 break
 
-    # Intra-country locality verification (Fix 1)
+    # Foreign country or address contradiction check (Fix 2)
+    if address and is_address_contradicting_target_country(address, country_iso, country_name):
+        return None
+
+    # Intra-country locality verification (Fix 1 & Fix 2)
     is_valid, local_confirmed = verify_local_geo_alignment(
         crawled_text=combined_text,
         url=url,
@@ -1534,6 +1703,24 @@ async def crawl_business_website(
             address = f"{city}, {country_name}"
         else:
             address = country_name
+
+    # Minimum Reachability Floor (Fix 3):
+    # Require:
+    # (a) valid target-country phone_e164, OR
+    # (b) email_mx_verified business email, OR
+    # (c) both confirmed street-level address in target city AND verified @instagram handle
+    has_valid_phone = bool(phone_e164 and disp_phone)
+    has_mx_email = bool(email and email_mx_verified)
+    has_street_address = bool(
+        address
+        and not is_generic_country_address(address, country_name, country_iso)
+        and address.strip().lower() != city.strip().lower()
+        and address.strip().lower() != f"{city}, {country_name}".strip().lower()
+    )
+    has_reach_ig = bool(ig_handle and has_street_address and local_confirmed)
+
+    if not (has_valid_phone or has_mx_email or has_reach_ig):
+        return None
 
     # 8. Rating Extraction
     rating: Optional[float] = candidate.get("rating")
@@ -1683,7 +1870,10 @@ async def extract_leads(
 
     yielded_count = 0
     domain_crawl_counts: Dict[str, int] = defaultdict(int)
+    domain_phoneless_counts: Dict[str, int] = defaultdict(int)
     seen_phones: Set[str] = set()
+    seen_emails: Set[str] = set()
+    seen_instagrams: Set[str] = set()
     seen_identities: Set[Tuple[str, str]] = set()
     seen_urls: Set[str] = set()
 
@@ -1781,8 +1971,30 @@ async def extract_leads(
                 if not is_val:
                     continue
 
-                # 6. Deduplication
+                # 6. Minimum Reachability Floor (Fix 3)
+                email = (raw_lead.get("email") or "").lower().strip()
+                ig = (raw_lead.get("instagram_handle") or "").lower().strip()
+                address = raw_lead.get("address", "")
+                has_valid_p = bool(raw_lead.get("phone_e164"))
+                has_mx_em = bool(email and raw_lead.get("email_mx_verified", False))
+                has_st = bool(
+                    address
+                    and not is_generic_country_address(address, country_name, country_iso)
+                    and address.strip().lower() != city_name.strip().lower()
+                    and address.strip().lower() != f"{city_name}, {country_name}".strip().lower()
+                )
+                has_reach_ig = bool(ig and has_st and local_conf)
+                if not (has_valid_p or has_mx_em or has_reach_ig):
+                    continue
+
+                # 7. Multi-Key Deduplication & Single-Record Cap for Phoneless Domains
                 if phone_e164 and phone_e164 in seen_phones:
+                    continue
+                if email and email in seen_emails:
+                    continue
+                if ig and ig in seen_instagrams:
+                    continue
+                if not phone_e164 and root_dom and domain_phoneless_counts[root_dom] >= 1:
                     continue
                 if root_dom and domain_crawl_counts[root_dom] >= 5:
                     continue
@@ -1797,6 +2009,14 @@ async def extract_leads(
 
                 if phone_e164:
                     seen_phones.add(phone_e164)
+                else:
+                    if root_dom:
+                        domain_phoneless_counts[root_dom] += 1
+
+                if email:
+                    seen_emails.add(email)
+                if ig:
+                    seen_instagrams.add(ig)
                 if norm_name and norm_addr:
                     seen_identities.add(identity_key)
                 if root_dom:
@@ -1851,6 +2071,8 @@ async def extract_leads(
                 url = cand.get("url", "")
                 if url:
                     if url in seen_urls:
+                        return
+                    if is_ad_or_sponsored_tracker(url, cand.get("title", "")):
                         return
                     if is_cctld_mismatched(url, country_iso):
                         return
@@ -1936,10 +2158,10 @@ async def extract_leads(
                         })
                         tasks = []
                         for q in wave_queries:
-                            tasks.append(search_yahoo(q, max_pages=2))
-                            tasks.append(search_bing(q, max_pages=2))
+                            tasks.append(search_yahoo(q, country_iso=country_iso, max_pages=2))
+                            tasks.append(search_bing(q, country_iso=country_iso, max_pages=2))
                             if DDGS:
-                                tasks.append(search_ddg(q, max_results=15))
+                                tasks.append(search_ddg(q, country_iso=country_iso, max_results=15))
                         results = await asyncio.gather(*tasks, return_exceptions=True)
                         for res in results:
                             if not isinstance(res, list):
@@ -2029,9 +2251,25 @@ async def extract_leads(
                         await asyncio.sleep(0)
                         continue
 
-                    # Lead validation and deduplication
+                    # Lead validation and multi-key deduplication (Fix 3)
                     phone_e164 = item.get("phone_e164")
                     if phone_e164 and phone_e164 in seen_phones:
+                        continue
+
+                    email = (item.get("email") or "").lower().strip()
+                    if email and email in seen_emails:
+                        continue
+
+                    ig_handle = (item.get("instagram_handle") or "").lower().strip()
+                    if ig_handle and ig_handle in seen_instagrams:
+                        continue
+
+                    root_dom = extract_root_domain(item.get("website", ""))
+                    # Single-record cap for phoneless domains (Fix 3)
+                    if not phone_e164 and root_dom and domain_phoneless_counts[root_dom] >= 1:
+                        continue
+
+                    if root_dom and domain_crawl_counts[root_dom] >= 5:
                         continue
 
                     norm_name = re.sub(r"\W+", "", item.get("name", "").lower())
@@ -2040,13 +2278,17 @@ async def extract_leads(
                     if norm_name and norm_addr and identity_key in seen_identities:
                         continue
 
-                    root_dom = extract_root_domain(item.get("website", ""))
-                    if root_dom and domain_crawl_counts[root_dom] >= 5:
-                        continue
-
                     # Deduplication locks
                     if phone_e164:
                         seen_phones.add(phone_e164)
+                    else:
+                        if root_dom:
+                            domain_phoneless_counts[root_dom] += 1
+
+                    if email:
+                        seen_emails.add(email)
+                    if ig_handle:
+                        seen_instagrams.add(ig_handle)
                     if norm_name and norm_addr:
                         seen_identities.add(identity_key)
                     if root_dom:

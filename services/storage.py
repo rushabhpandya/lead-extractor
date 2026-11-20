@@ -21,7 +21,7 @@ logger = logging.getLogger("storage")
 DB_PATH = Path(__file__).parent.parent / "leads_store.db"
 
 # Schema version: incremented whenever enrichment signals, geo-filters, or schema change
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 
 
@@ -79,7 +79,7 @@ def init_db(db_path: Optional[Path] = None, force_reset: bool = False) -> None:
                     phone_e164 TEXT PRIMARY KEY,
                     category_norm TEXT NOT NULL,
                     location_norm TEXT NOT NULL,
-                    schema_version INTEGER NOT NULL DEFAULT 3,
+                    schema_version INTEGER NOT NULL DEFAULT 4,
                     data TEXT NOT NULL,
                     scraped_at REAL NOT NULL
                 );
