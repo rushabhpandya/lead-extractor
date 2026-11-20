@@ -39,8 +39,17 @@
     <!-- Full-Width Executive Search Panel -->
     <section class="search-panel">
       <div class="panel-header-row">
-        <div class="panel-label">Search Parameters</div>
-        <div class="panel-status-tag">Ready</div>
+        <div class="panel-header-left">
+          <div class="panel-label">Search Parameters</div>
+          <div class="panel-status-tag">Ready</div>
+        </div>
+        <div class="panel-header-right">
+          <label class="toggle-control" title="Bypass local cache &amp; SQLite store to force fresh real-time web discovery">
+            <input type="checkbox" id="chk-bypass-cache" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-text">Fresh Live Crawl</span>
+          </label>
+        </div>
       </div>
 
       <div class="controls-grid">
@@ -243,6 +252,23 @@
       </div>
     </section>
 
+    <!-- Live Pipeline Telemetry Bar & Stop-and-Keep Control -->
+    <div class="telemetry-bar" id="telemetry-bar" style="display:none;">
+      <div class="telemetry-left">
+        <span class="telemetry-pulse"></span>
+        <span class="telemetry-stage" id="telemetry-stage">INIT</span>
+        <span class="telemetry-msg" id="telemetry-msg">Connecting to pipeline...</span>
+      </div>
+      <div class="telemetry-right">
+        <button class="btn-stop-keep" id="btn-stop-keep" title="Halt background crawling immediately and retain all loaded leads">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="4" y="4" width="16" height="16" rx="2"/>
+          </svg>
+          Stop &amp; Keep Leads
+        </button>
+      </div>
+    </div>
+
     <!-- Always-Visible Enterprise CRM Terminal -->
     <section class="results-section visible" id="results-section">
       <div class="table-wrapper">
@@ -298,12 +324,44 @@
           </div>
         </div>
 
+        <!-- High-Intent Filter Pills Bar -->
+        <div class="filter-pills-bar">
+          <div class="filter-pills-group" id="filter-pills-group">
+            <button class="filter-pill active" data-filter="all">All</button>
+            <button class="filter-pill" data-filter="mx">
+              <span class="pill-dot emerald"></span> MX Verified Email
+            </button>
+            <button class="filter-pill" data-filter="ig">
+              <span class="pill-dot gold"></span> Has Instagram
+            </button>
+            <button class="filter-pill" data-filter="wa">
+              <span class="pill-dot emerald"></span> WhatsApp Ready
+            </button>
+            <button class="filter-pill" data-filter="ads">
+              <span class="pill-dot blue"></span> Running Ads
+            </button>
+            <button class="filter-pill" data-filter="noads">
+              <span class="pill-dot dim"></span> No Ads Yet
+            </button>
+          </div>
+          <div class="filter-actions-group">
+            <button class="btn-secondary btn-copy-emails" id="btn-copy-emails" title="Copy all visible MX-verified emails to clipboard">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                <polyline points="22,6 12,13 2,6"/>
+              </svg>
+              Copy Emails
+            </button>
+          </div>
+        </div>
+
         <div class="table-scroll">
           <table id="leads-table">
             <thead>
               <tr>
                 <th>#</th>
                 <th class="sortable" data-col="name">Business Name <span class="sort-arrow"></span></th>
+                <th class="sortable" data-col="score">Signals <span class="sort-arrow"></span></th>
                 <th class="sortable" data-col="address">Address <span class="sort-arrow"></span></th>
                 <th class="sortable" data-col="rating">Rating <span class="sort-arrow"></span></th>
                 <th>Phone Number</th>

@@ -79,10 +79,22 @@ def _load_proxies(proxy_string: Optional[str] = None) -> List[str]:
     return sources
 
 
+def get_browser_headers(country_iso: str = "IN") -> dict:
+    """Generate rotated per-request browser headers matched to target geography."""
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": _LANG_HEADERS.get(country_iso, "en-US,en;q=0.9"),
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+
 class AsyncProxyClientPool:
     """
-    Pool of httpx.AsyncClient instances, optionally backed by rotating proxies.
-    Falls back to a single non-proxy client if no proxies are configured.
+    Shared session-scoped pool of HTTP/2-enabled clients with connection limits
+    (max 60 connections, max 30 keepalive) and rotating proxies.
     """
 
     def __init__(
@@ -94,76 +106,51 @@ class AsyncProxyClientPool:
         self._proxies = _load_proxies(proxy_string)
         self._country_iso = country_iso
         self._timeout = timeout
-        self._clients: List[httpx.AsyncClient] = []
+        self._client: Optional[httpx.AsyncClient] = None
         self._lock = asyncio.Lock()
 
-    def _make_headers(self) -> dict:
-        return {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": _LANG_HEADERS.get(self._country_iso, "en-US,en;q=0.9"),
-            "Accept-Encoding": "gzip, deflate",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-        }
+    async def get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            async with self._lock:
+                if self._client is None or self._client.is_closed:
+                    limits = httpx.Limits(max_connections=60, max_keepalive_connections=30)
+                    proxy = random.choice(self._proxies) if self._proxies else None
+                    kwargs: dict = {
+                        "http2": True,
+                        "limits": limits,
+                        "headers": get_browser_headers(self._country_iso),
+                        "timeout": self._timeout,
+                        "follow_redirects": True,
+                    }
+                    if proxy:
+                        kwargs["proxy"] = proxy
+                    self._client = httpx.AsyncClient(**kwargs)
+        return self._client
 
-    def _make_client(self, proxy: Optional[str] = None) -> httpx.AsyncClient:
-        kwargs: dict = {
-            "headers": self._make_headers(),
-            "timeout": self._timeout,
-            "follow_redirects": True,
-        }
-        if proxy:
-            kwargs["proxy"] = proxy
-        return httpx.AsyncClient(**kwargs)
-
-    async def get(self, url: str, **kwargs) -> httpx.Response:
-        """
-        Perform GET with rotating proxy + exponential backoff on 429/503.
-        """
-        proxy = random.choice(self._proxies) if self._proxies else None
-        client = self._make_client(proxy)
-        backoff = 1.0
-
-        for attempt in range(3):
-            try:
-                async with client:
-                    resp = await client.get(url, **kwargs)
-                    if resp.status_code in (429, 503):
-                        wait = backoff + random.uniform(0, 0.5)
-                        logger.debug("Rate limited on %s — sleeping %.1fs", url, wait)
-                        await asyncio.sleep(wait)
-                        backoff *= 2
-                        proxy = random.choice(self._proxies) if self._proxies else None
-                        client = self._make_client(proxy)
-                        continue
-                    return resp
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
-                logger.debug("Request error on %s (attempt %d): %s", url, attempt + 1, exc)
-                await asyncio.sleep(backoff)
-                backoff *= 2
-                proxy = random.choice(self._proxies) if self._proxies else None
-                client = self._make_client(proxy)
-
-        # Final attempt — no proxy
-        async with self._make_client(None) as bare:
-            return await bare.get(url, **kwargs)
+    async def aclose(self):
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
 
-def make_client(country_iso: str = "IN", timeout: float = 8.0) -> httpx.AsyncClient:
+def make_client(
+    country_iso: str = "IN",
+    timeout: float = 8.0,
+    max_connections: int = 60,
+    max_keepalive: int = 30,
+) -> httpx.AsyncClient:
     """
-    Create a single-use httpx.AsyncClient with region-matched headers.
-    Use as `async with make_client(...) as client: ...`
+    Create a shared session-scoped httpx.AsyncClient pool with HTTP/2 enabled,
+    connection limits (60 max, 30 keepalive), and region-matched headers.
+    Use as: `async with make_client(...) as client: ...`
     """
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": _LANG_HEADERS.get(country_iso, "en-US,en;q=0.9"),
-        "Accept-Encoding": "gzip, deflate",
-        "Connection": "keep-alive",
-    }
+    limits = httpx.Limits(
+        max_connections=max_connections,
+        max_keepalive_connections=max_keepalive,
+    )
     return httpx.AsyncClient(
-        headers=headers,
+        http2=True,
+        limits=limits,
+        headers=get_browser_headers(country_iso),
         timeout=timeout,
         follow_redirects=True,
     )

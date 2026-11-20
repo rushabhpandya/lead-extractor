@@ -54,10 +54,12 @@ async def api_extract(
     req_id: str = "",
     rating: Optional[str] = None,
     match_mode: Optional[str] = None,
+    bypass_cache: bool = False,
 ):
     """
     Server-Sent Events stream.
     Yields real-time events:
+      {"type": "status", "stage": "...", "message": "...", "scanned": N, "verified": M}
       {"type": "lead", "data": {...}}
       {"type": "done", "data": {"delivered": N, "elapsed": S}}
       {"type": "error", "data": {"message": "..."}}
@@ -80,20 +82,27 @@ async def api_extract(
     async def event_stream():
         nonlocal delivered
         try:
-            async for lead in extract_leads(
+            async for item in extract_leads(
                 category=category,
                 location=location,
                 volume=volume,
                 star=star,
                 mode=mode,
+                bypass_cache=bypass_cache,
             ):
                 if await request.is_disconnected():
                     break
                 if stop_event.is_set():
                     break
 
+                if isinstance(item, dict) and item.get("type") == "status":
+                    payload = json.dumps(item)
+                    yield f"data: {payload}\n\n"
+                    await asyncio.sleep(0)
+                    continue
+
                 delivered += 1
-                payload = json.dumps({"type": "lead", "data": lead})
+                payload = json.dumps({"type": "lead", "data": item})
                 yield f"data: {payload}\n\n"
                 await asyncio.sleep(0)
 
@@ -163,8 +172,12 @@ async def api_export_sheets(request: Request):
     ws = wb.active
     ws.title = "Verified B2B Leads"
 
-    headers = ["#", "Business Name", "Address", "Rating", "Phone Number",
-               "Phone (E.164)", "Email", "Instagram Handle", "Website", "Category", "Country"]
+    headers = [
+        "#", "Business Name", "Address", "Rating", "Lead Score",
+        "Phone Number", "Phone (E.164)", "WhatsApp URL",
+        "Email", "Email MX Verified", "Instagram Handle", "LinkedIn URL",
+        "Website", "CMS Platform", "Meta Pixel", "Google Ads", "Category", "Country"
+    ]
     ws.append(headers)
 
     # Styling
@@ -172,16 +185,12 @@ async def api_export_sheets(request: Request):
     header_font = Font(name="Calibri", size=11, bold=True, color="FAFAFA")
     center_align = Alignment(horizontal="center", vertical="center")
     left_align = Alignment(horizontal="left", vertical="center")
-    thin_border = Border(
-        bottom=Side(style="thin", color="222226"),
-        right=Side(style="thin", color="222226")
-    )
 
     for col_idx in range(1, len(headers) + 1):
         cell = ws.cell(row=1, column=col_idx)
         cell.fill = dark_fill
         cell.font = header_font
-        cell.alignment = center_align if col_idx in (1, 4) else left_align
+        cell.alignment = center_align if col_idx in (1, 4, 5, 10, 15, 16) else left_align
 
     # Freeze row 1
     ws.freeze_panes = "A2"
@@ -189,51 +198,81 @@ async def api_export_sheets(request: Request):
     for idx, item in enumerate(leads, start=1):
         r_val = item.get("rating")
         rating_num = float(r_val) if r_val is not None and str(r_val).strip() else ""
+        lead_score_num = int(item.get("lead_score") or 0)
         phone_str = str(item.get("phone", "") or "")
         phone_e164_str = str(item.get("phone_e164", "") or phone_str)
+        wa_url_str = str(item.get("whatsapp_url", "") or "")
         ig_handle = str(item.get("instagram_handle", "") or "")
         ig_display = ("@" + ig_handle) if ig_handle else ""
+        li_url_str = str(item.get("linkedin_url", "") or "")
+        mx_str = "YES" if item.get("email_mx_verified") else "NO"
+        meta_str = "YES" if item.get("has_meta_pixel") else "NO"
+        gads_str = "YES" if item.get("has_google_ads") else "NO"
+        cms_str = str(item.get("cms_platform", "") or "Custom")
 
         row = [
             idx,
             str(item.get("name", "") or ""),
             str(item.get("address", "") or ""),
             rating_num,
+            lead_score_num,
             phone_str,
             phone_e164_str,
+            wa_url_str,
             str(item.get("email", "") or ""),
+            mx_str,
             ig_display,
+            li_url_str,
             str(item.get("website", "") or ""),
+            cms_str,
+            meta_str,
+            gads_str,
             str(item.get("category", "") or ""),
             str(item.get("country_code", "") or ""),
         ]
         ws.append(row)
         current_row = idx + 1
 
-        # CRITICAL FIX: Explicit string type on phone number cells + Instagram
-        p_cell = ws.cell(row=current_row, column=5)
+        # Text-safe string formatting for phone numbers, WhatsApp, Instagram, LinkedIn
+        p_cell = ws.cell(row=current_row, column=6)
         p_cell.data_type = 's'
         p_cell.value = phone_str
         p_cell.number_format = '@'
 
-        e164_cell = ws.cell(row=current_row, column=6)
+        e164_cell = ws.cell(row=current_row, column=7)
         e164_cell.data_type = 's'
         e164_cell.value = phone_e164_str
         e164_cell.number_format = '@'
 
-        ig_cell = ws.cell(row=current_row, column=8)
+        wa_cell = ws.cell(row=current_row, column=8)
+        wa_cell.data_type = 's'
+        wa_cell.value = wa_url_str
+        wa_cell.number_format = '@'
+
+        ig_cell = ws.cell(row=current_row, column=11)
         ig_cell.data_type = 's'
         ig_cell.value = ig_display
         ig_cell.number_format = '@'
 
-        # Rating formatting
+        li_cell = ws.cell(row=current_row, column=12)
+        li_cell.data_type = 's'
+        li_cell.value = li_url_str
+        li_cell.number_format = '@'
+
+        # Score & Rating alignment
+        ws.cell(row=current_row, column=1).alignment = center_align
+        score_cell = ws.cell(row=current_row, column=5)
+        score_cell.alignment = center_align
+        score_cell.number_format = '0'
+
         if rating_num != "":
             r_cell = ws.cell(row=current_row, column=4)
             r_cell.number_format = '0.0'
             r_cell.alignment = center_align
 
-        # Index centering
-        ws.cell(row=current_row, column=1).alignment = center_align
+        ws.cell(row=current_row, column=10).alignment = center_align
+        ws.cell(row=current_row, column=15).alignment = center_align
+        ws.cell(row=current_row, column=16).alignment = center_align
 
     # Auto-adjust column widths
     for col in ws.columns:

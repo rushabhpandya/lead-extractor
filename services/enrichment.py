@@ -5,9 +5,10 @@ Replaces the India-only TRAI gatekeeper with the `phonenumbers` library for glob
 
 from __future__ import annotations
 
+import asyncio
 import re
 import logging
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 from urllib.parse import urlparse, unquote
 
 try:
@@ -16,6 +17,13 @@ try:
     _HAS_PHONENUMBERS = True
 except ImportError:
     _HAS_PHONENUMBERS = False
+
+try:
+    import dns.asyncresolver
+    import dns.resolver
+    _HAS_DNS = True
+except ImportError:
+    _HAS_DNS = False
 
 logger = logging.getLogger("enrichment")
 
@@ -296,3 +304,239 @@ def extract_instagram(html: str, page_url: str = "") -> Tuple[Optional[str], Opt
             continue
         return handle, f"https://www.instagram.com/{handle}/"
     return None, None
+
+
+# ---------------------------------------------------------------------------
+# DNS MX Deliverability Verification (Upgrade 3)
+# ---------------------------------------------------------------------------
+
+mx_cache: Dict[str, bool] = {}
+
+
+async def verify_email_mx(email: str) -> bool:
+    """
+    Asynchronously verify MX records for the given email domain.
+    Uses dns.asyncresolver.Resolver with a 1.5s timeout and in-memory cache.
+    Fails open safely (returns False without raising exceptions).
+    """
+    if not email or "@" not in email:
+        return False
+    domain = email.split("@")[1].strip().lower()
+    if not domain or "." not in domain:
+        return False
+
+    if domain in mx_cache:
+        return mx_cache[domain]
+
+    if not _HAS_DNS:
+        return False
+
+    try:
+        resolver = dns.asyncresolver.Resolver()
+        resolver.lifetime = 1.5
+        resolver.timeout = 1.5
+        answers = await resolver.resolve(domain, "MX")
+        has_mx = len(answers) > 0
+        mx_cache[domain] = has_mx
+        return has_mx
+    except Exception as exc:
+        logger.debug("MX verification failed for domain %s: %s", domain, exc)
+        mx_cache[domain] = False
+        return False
+
+
+async def rank_and_verify_emails(raw_emails: List[str]) -> Tuple[str, bool, List[str]]:
+    """
+    Sanitize and rank candidate emails, performing async MX verification.
+    Prefers MX-verified emails, and ranks direct/decision-maker prefixes ahead of generic ones.
+    Returns (best_email, is_mx_verified, ranked_emails_list).
+    """
+    sanitized: List[str] = []
+    seen = set()
+    for em in raw_emails:
+        clean = clean_and_validate_email(em)
+        if clean and clean not in seen:
+            seen.add(clean)
+            sanitized.append(clean)
+
+    if not sanitized:
+        return "", False, []
+
+    # MX check tasks for all unique candidate domains
+    mx_tasks = [verify_email_mx(em) for em in sanitized]
+    mx_results = await asyncio.gather(*mx_tasks, return_exceptions=True)
+
+    email_mx_map: Dict[str, bool] = {}
+    for em, res in zip(sanitized, mx_results):
+        email_mx_map[em] = bool(res) if isinstance(res, bool) else False
+
+    def _sort_key(email: str) -> Tuple[int, int]:
+        is_mx = 0 if email_mx_map.get(email, False) else 1  # 0 is better (True first)
+        local = email.split("@")[0].lower()
+        prefix_score = len(_EMAIL_PRIORITY)
+        for idx, prefix in enumerate(_EMAIL_PRIORITY):
+            if prefix in local:
+                prefix_score = idx
+                break
+        return (is_mx, prefix_score)
+
+    ranked = sorted(sanitized, key=_sort_key)
+    best_email = ranked[0]
+    best_mx = email_mx_map.get(best_email, False)
+    return best_email, best_mx, ranked
+
+
+# ---------------------------------------------------------------------------
+# Zero-Request Marketing Signal Fingerprinting (Upgrade 2)
+# ---------------------------------------------------------------------------
+
+_META_PIXEL_RE = re.compile(
+    r'(?:fbq\s*\(|connect\.facebook\.net/[a-zA-Z_]+/fbevents\.js|facebook\.com/tr\?id=|_fbq)',
+    re.IGNORECASE,
+)
+
+_GOOGLE_ADS_RE = re.compile(
+    r'(?:googletagmanager\.com/gtag|googleadservices\.com|AW-\d+|gtm\.js|adsbygoogle)',
+    re.IGNORECASE,
+)
+
+_CMS_SIGNATURES = [
+    ("Shopify", re.compile(r'(?:cdn\.shopify\.com|Shopify\.theme|myshopify\.com|shopify-section)', re.I)),
+    ("WooCommerce", re.compile(r'(?:woocommerce-|wc-ajax=|class=[\'"][^\'"]*woocommerce|woocommerce_params)', re.I)),
+    ("WordPress", re.compile(r'(?:/wp-content/|/wp-includes/|wp-json/)', re.I)),
+    ("Webflow", re.compile(r'(?:assets\.website-files\.com|data-wf-page|data-wf-site|webflow\.com)', re.I)),
+    ("Squarespace", re.compile(r'(?:static1\.squarespace\.com|squarespace-config|squarespace\.com)', re.I)),
+    ("Wix", re.compile(r'(?:wixsite\.com|static\.wixstatic\.com|wix\.com|wix-dropdown)', re.I)),
+    ("Magento", re.compile(r'(?:Mage\.Cookies|/skin/frontend/|static/frontend/|mage/)', re.I)),
+]
+
+_WHATSAPP_LINK_RE = re.compile(
+    r'https?://(?:wa\.me|api\.whatsapp\.com/send\??)[^\s"\'<>]+',
+    re.IGNORECASE,
+)
+
+_LINKEDIN_COMPANY_RE = re.compile(
+    r'https?://(?:www\.)?linkedin\.com/company/([A-Za-z0-9_\-]+)/?',
+    re.IGNORECASE,
+)
+
+
+def detect_meta_pixel(html: str) -> bool:
+    """Detect Meta/Facebook Pixel scripts in page HTML."""
+    if not html:
+        return False
+    return bool(_META_PIXEL_RE.search(html))
+
+
+def detect_google_ads(html: str) -> bool:
+    """Detect Google Ads / Tag Manager / conversion tags in page HTML."""
+    if not html:
+        return False
+    return bool(_GOOGLE_ADS_RE.search(html))
+
+
+def detect_cms_platform(html: str) -> str:
+    """Detect primary web CMS/eCommerce platform from page HTML."""
+    if not html:
+        return "Custom"
+    for name, pattern in _CMS_SIGNATURES:
+        if pattern.search(html):
+            return name
+    return "Custom"
+
+
+def extract_whatsapp_url(
+    html: str,
+    phone_e164: Optional[str] = None,
+    is_whatsapp_ready: bool = True,
+) -> str:
+    """
+    Extract direct WhatsApp link from HTML or construct wa.me URL from E.164 phone.
+    """
+    if html:
+        m = _WHATSAPP_LINK_RE.search(html)
+        if m:
+            clean_url = m.group(0).rstrip(".,;')\"")
+            return clean_url
+
+    if is_whatsapp_ready and phone_e164:
+        digits = re.sub(r"\D", "", phone_e164)
+        if len(digits) >= 8:
+            return f"https://wa.me/{digits}"
+
+    return ""
+
+
+def extract_linkedin_url(html: str) -> str:
+    """Extract official company LinkedIn URL if present in HTML."""
+    if not html:
+        return ""
+    m = _LINKEDIN_COMPANY_RE.search(html)
+    if m:
+        company_slug = m.group(1).strip()
+        if company_slug and company_slug.lower() not in ("company", "share", "home"):
+            return f"https://www.linkedin.com/company/{company_slug}/"
+    return ""
+
+
+def calculate_lead_score(
+    has_phone: bool,
+    has_whatsapp: bool,
+    email: str,
+    email_mx_verified: bool,
+    has_instagram: bool,
+    address: str,
+    city: str,
+    country_name: str,
+    has_meta_pixel: bool,
+    has_google_ads: bool,
+) -> int:
+    """
+    Compute a deterministic outreach-readiness score (0–100):
+      - Valid callable phone (+20), WhatsApp-ready/direct WA (+10)
+      - MX-verified email (+25), plus bonus (+10) if non-role/founder-style prefix
+      - Active Instagram handle (+15)
+      - Street-level physical address (+10)
+      - Active ad tracking (has_meta_pixel or has_google_ads) (+10)
+    """
+    score = 0
+
+    # 1. Phone (+20)
+    if has_phone:
+        score += 20
+
+    # 2. WhatsApp (+10)
+    if has_whatsapp:
+        score += 10
+
+    # 3. Email (+25 for MX, +10 bonus for founder/direct prefix)
+    if email and email_mx_verified:
+        score += 25
+        local_part = email.split("@")[0].lower()
+        generic_roles = {
+            "info", "sales", "contact", "support", "admin", "office",
+            "help", "enquiries", "enquiry", "hello", "mail", "team",
+            "service", "services", "billing", "general", "inquiry", "inquiries",
+        }
+        if local_part not in generic_roles and not any(
+            local_part.startswith(g + ".") or local_part.startswith(g + "_") for g in generic_roles
+        ):
+            score += 10
+
+    # 4. Instagram (+15)
+    if has_instagram:
+        score += 15
+
+    # 5. Street-level physical address (+10)
+    if address:
+        clean_addr = address.strip().lower()
+        fallback_geo = f"{city}, {country_name}".strip().lower()
+        # Has street details beyond the generic city/country string
+        if clean_addr != fallback_geo and len(clean_addr) > len(fallback_geo):
+            score += 10
+
+    # 6. Active ad tracking (+10)
+    if has_meta_pixel or has_google_ads:
+        score += 10
+
+    return max(0, min(100, score))

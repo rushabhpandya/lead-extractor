@@ -41,8 +41,17 @@ class LeadRecord(BaseModel):
     website: str = ""
     rating: Optional[float] = None
 
+    # Outbound Marketing & Tech Intelligence Signals (Zero-Request)
+    has_meta_pixel: bool = False
+    has_google_ads: bool = False
+    cms_platform: str = "Custom"
+    whatsapp_url: str = ""
+    linkedin_url: str = ""
+    lead_score: int = 0
+    email_mx_verified: bool = False
+
     # Meta
-    source: str = "cache"       # "cache" | "osm" | "ddgs" | "live"
+    source: str = "cache"       # "cache" | "osm" | "ddgs" | "live" | "sqlite"
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -53,18 +62,28 @@ class LeadRecord(BaseModel):
         return self.business_name
 
     def to_legacy_dict(self) -> dict:
-        """Return dict compatible with the existing app.js SSE consumer."""
+        """Return dict compatible with the app.js SSE consumer and export endpoints."""
         return {
-            "name":      self.business_name,
-            "address":   self.address,
-            "phone":     self.phone_e164 or self.phone,
-            "email":     self.email,
-            "website":   self.website,
-            "rating":    self.rating,
-            "instagram_handle": self.instagram_handle,
-            "instagram_url":    self.instagram_url,
-            "country_code":     self.country_code,
-            "city":      self.city,
-            "category":  self.category,
-            "source":    self.source,
+            "name":              self.business_name,
+            "address":           self.address,
+            "phone":             self.phone_e164 or self.phone,
+            "phone_e164":        self.phone_e164,
+            "is_whatsapp_ready": self.is_whatsapp_ready,
+            "email":             self.email,
+            "website":           self.website,
+            "rating":            self.rating,
+            "instagram_handle":  self.instagram_handle,
+            "instagram_url":     self.instagram_url,
+            "country_code":      self.country_code,
+            "city":              self.city,
+            "category":          self.category,
+            "source":            self.source,
+            # Intelligence Signals
+            "has_meta_pixel":    self.has_meta_pixel,
+            "has_google_ads":    self.has_google_ads,
+            "cms_platform":      self.cms_platform,
+            "whatsapp_url":      self.whatsapp_url,
+            "linkedin_url":      self.linkedin_url,
+            "lead_score":        self.lead_score,
+            "email_mx_verified": self.email_mx_verified,
         }

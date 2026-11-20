@@ -1238,7 +1238,7 @@ td.col-website {
   max-width: 150px;
 }
 
-/* ── Wider table scroll for 8-column layout with fixed column percentages ── */
+/* ── Wider table scroll for 9-column layout with fixed column percentages ── */
 .table-scroll {
   width: 100%;
   overflow-x: auto;
@@ -1248,20 +1248,345 @@ td.col-website {
 #leads-table {
   table-layout: fixed;
   width: 100%;
-  min-width: 900px;
+  min-width: 960px;
 }
 
 #leads-table th:nth-child(1), #leads-table td:nth-child(1) { width: 4%; }
-#leads-table th:nth-child(2), #leads-table td:nth-child(2) { width: 20%; }
-#leads-table th:nth-child(3), #leads-table td:nth-child(3) { width: 18%; }
-#leads-table th:nth-child(4), #leads-table td:nth-child(4) { width: 9%; }
-#leads-table th:nth-child(5), #leads-table td:nth-child(5) { width: 15%; }
-#leads-table th:nth-child(6), #leads-table td:nth-child(6) { width: 16%; }
-#leads-table th:nth-child(7), #leads-table td:nth-child(7) { width: 12%; }
-#leads-table th:nth-child(8), #leads-table td:nth-child(8) { width: 6%; }
+#leads-table th:nth-child(2), #leads-table td:nth-child(2) { width: 18%; }
+#leads-table th:nth-child(3), #leads-table td:nth-child(3) { width: 14%; }
+#leads-table th:nth-child(4), #leads-table td:nth-child(4) { width: 16%; }
+#leads-table th:nth-child(5), #leads-table td:nth-child(5) { width: 8%; }
+#leads-table th:nth-child(6), #leads-table td:nth-child(6) { width: 15%; }
+#leads-table th:nth-child(7), #leads-table td:nth-child(7) { width: 15%; }
+#leads-table th:nth-child(8), #leads-table td:nth-child(8) { width: 7%; }
+#leads-table th:nth-child(9), #leads-table td:nth-child(9) { width: 3%; }
 
 #leads-table td {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Toggle Control (Fresh Live Crawl) ───────────────────────── */
+.panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.panel-header-right {
+  display: flex;
+  align-items: center;
+}
+
+.toggle-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-control input {
+  display: none;
+}
+
+.toggle-slider {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  transition: all 0.2s ease;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toggle-control input:checked + .toggle-slider {
+  background: rgba(212, 175, 55, 0.3);
+  border-color: var(--gold);
+}
+
+.toggle-control input:checked + .toggle-slider::before {
+  transform: translateX(14px);
+  background: var(--gold);
+  box-shadow: 0 0 8px var(--gold);
+}
+
+.toggle-text {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+/* ── Live Pipeline Telemetry Bar ─────────────────────────────── */
+.telemetry-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(90deg, rgba(18, 22, 30, 0.96) 0%, rgba(13, 16, 22, 0.98) 100%);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: var(--radius-md);
+  padding: 10px 18px;
+  margin-bottom: 18px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px);
+  gap: 12px;
+  animation: rowFadeIn 0.25s ease-out;
+}
+
+.telemetry-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.telemetry-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 10px var(--gold);
+  animation: pulseGold 1.5s infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pulseGold {
+  0% { transform: scale(0.9); opacity: 0.7; }
+  50% { transform: scale(1.2); opacity: 1; box-shadow: 0 0 14px var(--gold); }
+  100% { transform: scale(0.9); opacity: 0.7; }
+}
+
+.telemetry-stage {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold);
+  background: var(--gold-tint);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  padding: 2px 7px;
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+}
+
+.telemetry-msg {
+  font-size: 12px;
+  color: var(--text-pure);
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-stop-keep {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-stop-keep:hover {
+  background: rgba(239, 68, 68, 0.22);
+  box-shadow: 0 0 12px var(--danger-glow);
+}
+
+/* ── Filter Pills Bar ────────────────────────────────────────── */
+.filter-pills-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: rgba(11, 14, 20, 0.85);
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-pills-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all var(--transition);
+  user-select: none;
+}
+
+.filter-pill:hover {
+  border-color: rgba(212, 175, 55, 0.4);
+  color: var(--text-pure);
+  background: rgba(212, 175, 55, 0.06);
+}
+
+.filter-pill.active {
+  background: rgba(212, 175, 55, 0.16);
+  border-color: var(--gold);
+  color: var(--gold-light);
+  box-shadow: 0 0 10px rgba(212, 175, 55, 0.2);
+}
+
+.pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.pill-dot.emerald { background: var(--emerald-light); box-shadow: 0 0 6px var(--emerald-light); }
+.pill-dot.gold    { background: var(--gold); box-shadow: 0 0 6px var(--gold); }
+.pill-dot.blue    { background: #38bdf8; box-shadow: 0 0 6px #38bdf8; }
+.pill-dot.dim     { background: var(--text-dim); }
+
+.btn-copy-emails {
+  color: var(--emerald-light);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.btn-copy-emails:hover {
+  background: var(--emerald-tint);
+  border-color: var(--emerald-light);
+  color: var(--emerald-light);
+  box-shadow: 0 0 12px var(--emerald-glow);
+}
+
+/* ── Compact Signals Column & Badges ─────────────────────────── */
+.signals-cell-wrap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+}
+
+.score-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 750;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  flex-shrink: 0;
+}
+
+.score-high {
+  background: rgba(16, 185, 129, 0.16);
+  color: var(--emerald-light);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.score-med {
+  background: rgba(212, 175, 55, 0.16);
+  color: var(--gold-light);
+  border: 1px solid rgba(212, 175, 55, 0.4);
+}
+
+.score-low {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.signal-tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.meta-badge {
+  background: rgba(56, 189, 248, 0.14);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.gads-badge {
+  background: rgba(251, 146, 60, 0.14);
+  color: #fb923c;
+  border: 1px solid rgba(251, 146, 60, 0.35);
+}
+
+.cms-badge {
+  background: rgba(168, 85, 247, 0.12);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  max-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 1-Click WhatsApp Button */
+.wa-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: rgba(37, 211, 102, 0.15);
+  border: 1px solid rgba(37, 211, 102, 0.4);
+  color: #25d366;
+  border-radius: 4px;
+  text-decoration: none;
+  transition: all var(--transition);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.wa-btn:hover {
+  background: rgba(37, 211, 102, 0.3);
+  transform: scale(1.1);
+  box-shadow: 0 0 10px rgba(37, 211, 102, 0.5);
+}
+
+/* Green MX Check Dot */
+.mx-check-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--emerald-light);
+  box-shadow: 0 0 6px var(--emerald-light);
+  display: inline-block;
+  flex-shrink: 0;
+  margin-left: 2px;
 }

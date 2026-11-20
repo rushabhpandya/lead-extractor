@@ -10,3 +10,6 @@ env/
 .idea/
 *.zip
 *.pptx
+*.db
+*.db-shm
+*.db-wal
