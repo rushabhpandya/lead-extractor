@@ -1,6 +1,7 @@
 """
 services/storage.py — Lightweight SQLite Persistent Lead Store.
-Operates in WAL mode with normalized indexing and 7-day TTL expiration.
+Operates in WAL mode with normalized indexing, schema versioning, and 7-day TTL expiration.
+Faithfully serializes and rehydrates complete LeadRecord payloads.
 """
 
 from __future__ import annotations
@@ -13,12 +14,15 @@ import time
 from pathlib import Path
 from typing import List, Optional, Set, Dict, Any
 
+from schemas.lead import LeadRecord
+
 logger = logging.getLogger("storage")
 
 DB_PATH = Path(__file__).parent.parent / "leads_store.db"
 
 # Schema version: incremented whenever enrichment signals, geo-filters, or schema change
-SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
+SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 
 
 def normalize_token(text: str) -> str:
@@ -36,10 +40,11 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
-def init_db(db_path: Optional[Path] = None) -> None:
+def init_db(db_path: Optional[Path] = None, force_reset: bool = False) -> None:
     """
     Initialize SQLite database schema and indexes.
-    Enforces schema versioning: flushes stale cached rows if schema_version is older.
+    Enforces automatic cache invalidation: drops and recreates leads table if schema_version
+    is missing or mismatched, purging stale records whenever filtering or enrichment logic changes.
     """
     try:
         with get_connection(db_path) as conn:
@@ -56,15 +61,15 @@ def init_db(db_path: Optional[Path] = None) -> None:
             row = cursor.fetchone()
             stored_version = int(row[0]) if row and row[0].isdigit() else 0
 
-            if stored_version < SCHEMA_VERSION:
+            if force_reset or stored_version != CURRENT_SCHEMA_VERSION:
                 logger.info(
-                    "SQLite schema version upgrade (%d -> %d). Flushing stale cached rows...",
-                    stored_version, SCHEMA_VERSION,
+                    "SQLite schema version mismatch/upgrade (%d -> %d). Flushing stale cached rows...",
+                    stored_version, CURRENT_SCHEMA_VERSION,
                 )
                 conn.execute("DROP TABLE IF EXISTS leads;")
                 conn.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?);",
-                    (str(SCHEMA_VERSION),),
+                    (str(CURRENT_SCHEMA_VERSION),),
                 )
                 conn.commit()
 
@@ -72,27 +77,39 @@ def init_db(db_path: Optional[Path] = None) -> None:
                 """
                 CREATE TABLE IF NOT EXISTS leads (
                     phone_e164 TEXT PRIMARY KEY,
-                    norm_category TEXT NOT NULL,
-                    norm_location TEXT NOT NULL,
+                    category_norm TEXT NOT NULL,
+                    location_norm TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL DEFAULT 3,
                     data TEXT NOT NULL,
                     scraped_at REAL NOT NULL
                 );
                 """
             )
+            # Remove any stray rows with old schema versions if table existed
+            conn.execute(
+                "DELETE FROM leads WHERE schema_version != ?;",
+                (CURRENT_SCHEMA_VERSION,),
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?);",
-                (str(SCHEMA_VERSION),),
+                (str(CURRENT_SCHEMA_VERSION),),
             )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_leads_cat_loc
-                ON leads (norm_category, norm_location);
+                ON leads (category_norm, location_norm);
                 """
             )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_leads_scraped_at
                 ON leads (scraped_at);
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_leads_schema_version
+                ON leads (schema_version);
                 """
             )
             conn.commit()
@@ -107,7 +124,7 @@ init_db()
 def save_lead_to_db(lead: dict, db_path: Optional[Path] = None) -> bool:
     """
     Persist a verified lead into SQLite store keyed by phone_e164.
-    Silently ignores records lacking a valid phone_e164.
+    Faithfully serializes complete LeadRecord payload so no enrichment fields are lost.
     """
     phone_e164 = lead.get("phone_e164")
     if not phone_e164 or not str(phone_e164).strip():
@@ -115,24 +132,23 @@ def save_lead_to_db(lead: dict, db_path: Optional[Path] = None) -> bool:
 
     cat = lead.get("category", "")
     loc = lead.get("city", "") or lead.get("address", "")
-    norm_cat = normalize_token(cat)
-    norm_loc = normalize_token(loc)
+    category_norm = normalize_token(cat)
+    location_norm = normalize_token(loc)
     now = time.time()
 
-    # Ensure source tag reflects SQLite when reloaded later
-    lead_copy = dict(lead)
-    if "source" not in lead_copy or not lead_copy["source"]:
-        lead_copy["source"] = "sqlite"
-
     try:
-        data_json = json.dumps(lead_copy)
+        lead_copy = dict(lead)
+        lead_copy["source"] = lead_copy.get("source") or "sqlite"
+        record = LeadRecord.model_validate(lead_copy)
+        data_json = json.dumps(record.to_legacy_dict())
+
         with get_connection(db_path) as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO leads (phone_e164, norm_category, norm_location, data, scraped_at)
-                VALUES (?, ?, ?, ?, ?);
+                INSERT OR REPLACE INTO leads (phone_e164, category_norm, location_norm, schema_version, data, scraped_at)
+                VALUES (?, ?, ?, ?, ?, ?);
                 """,
-                (phone_e164, norm_cat, norm_loc, data_json, now),
+                (phone_e164, category_norm, location_norm, CURRENT_SCHEMA_VERSION, data_json, now),
             )
             conn.commit()
         return True
@@ -142,7 +158,9 @@ def save_lead_to_db(lead: dict, db_path: Optional[Path] = None) -> bool:
 
 
 def save_leads_batch(leads: List[dict], db_path: Optional[Path] = None) -> int:
-    """Batch-save multiple verified leads into SQLite store."""
+    """
+    Batch-save multiple verified leads into SQLite store with full schema serialization.
+    """
     if not leads:
         return 0
 
@@ -154,11 +172,16 @@ def save_leads_batch(leads: List[dict], db_path: Optional[Path] = None) -> int:
             continue
         cat = lead.get("category", "")
         loc = lead.get("city", "") or lead.get("address", "")
-        norm_cat = normalize_token(cat)
-        norm_loc = normalize_token(loc)
-        lead_copy = dict(lead)
-        lead_copy["source"] = lead_copy.get("source") or "sqlite"
-        rows.append((phone_e164, norm_cat, norm_loc, json.dumps(lead_copy), now))
+        category_norm = normalize_token(cat)
+        location_norm = normalize_token(loc)
+        try:
+            lead_copy = dict(lead)
+            lead_copy["source"] = lead_copy.get("source") or "sqlite"
+            record = LeadRecord.model_validate(lead_copy)
+            data_json = json.dumps(record.to_legacy_dict())
+            rows.append((phone_e164, category_norm, location_norm, CURRENT_SCHEMA_VERSION, data_json, now))
+        except Exception:
+            continue
 
     if not rows:
         return 0
@@ -167,8 +190,8 @@ def save_leads_batch(leads: List[dict], db_path: Optional[Path] = None) -> int:
         with get_connection(db_path) as conn:
             conn.executemany(
                 """
-                INSERT OR REPLACE INTO leads (phone_e164, norm_category, norm_location, data, scraped_at)
-                VALUES (?, ?, ?, ?, ?);
+                INSERT OR REPLACE INTO leads (phone_e164, category_norm, location_norm, schema_version, data, scraped_at)
+                VALUES (?, ?, ?, ?, ?, ?);
                 """,
                 rows,
             )
@@ -187,34 +210,39 @@ def get_cached_leads_from_db(
 ) -> List[dict]:
     """
     Retrieve non-expired matching leads from the SQLite store.
-    Validates records against 7-day TTL and normalized category + location.
+    Validates records against 7-day TTL, schema_version, and normalized category + location.
+    Faithfully rehydrates full LeadRecord schema so no enrichment fields are lost.
     """
-    norm_cat = normalize_token(category)
-    norm_loc = normalize_token(location)
+    category_norm = normalize_token(category)
+    location_norm = normalize_token(location)
     cutoff = time.time() - (ttl_days * 86400.0)
 
     results: List[dict] = []
     try:
         with get_connection(db_path) as conn:
             cursor = conn.cursor()
-            # Match on category and location (exact or substring)
             query = """
                 SELECT data FROM leads
                 WHERE scraped_at >= ?
-                  AND norm_category = ?
+                  AND schema_version = ?
+                  AND category_norm = ?
                   AND (
-                      norm_location = ?
-                      OR norm_location LIKE ?
-                      OR ? LIKE '%' || norm_location || '%'
+                      location_norm = ?
+                      OR location_norm LIKE ?
+                      OR ? LIKE '%' || location_norm || '%'
                   )
                 ORDER BY scraped_at DESC;
             """
-            cursor.execute(query, (cutoff, norm_cat, norm_loc, f"%{norm_loc}%", norm_loc))
+            cursor.execute(
+                query,
+                (cutoff, CURRENT_SCHEMA_VERSION, category_norm, location_norm, f"%{location_norm}%", location_norm),
+            )
             rows = cursor.fetchall()
             for (data_json,) in rows:
                 try:
-                    lead = json.loads(data_json)
-                    results.append(lead)
+                    lead_dict = json.loads(data_json)
+                    record = LeadRecord.model_validate(lead_dict)
+                    results.append(record.to_legacy_dict())
                 except Exception:
                     continue
     except Exception as exc:
@@ -229,7 +257,7 @@ def get_all_cached_phones(db_path: Optional[Path] = None) -> Set[str]:
     try:
         with get_connection(db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT phone_e164 FROM leads;")
+            cursor.execute("SELECT phone_e164 FROM leads WHERE schema_version = ?;", (CURRENT_SCHEMA_VERSION,))
             for (phone,) in cursor.fetchall():
                 if phone:
                     phones.add(phone)

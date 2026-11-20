@@ -66,11 +66,6 @@ from services.proxy_manager import make_client, get_browser_headers
 
 logger = logging.getLogger("scraper_engine")
 
-CACHE_FILE = Path(__file__).parent.parent / "verified_leads_cache.json"
-
-_cache_data: Dict[str, List[dict]] = {}
-_cache_loaded: bool = False
-
 # ---------------------------------------------------------------------------
 # Registrable Root Domain Extraction
 # ---------------------------------------------------------------------------
@@ -199,70 +194,17 @@ EDITORIAL_TITLE_PREFIXES = re.compile(
 )
 
 # ---------------------------------------------------------------------------
-# Cache Management
+# Cache Management (SQLite Storage Layer Delegation)
 # ---------------------------------------------------------------------------
 
-def _load_cache() -> None:
-    global _cache_data, _cache_loaded
-    if _cache_loaded:
-        return
-    try:
-        if CACHE_FILE.is_file():
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                _cache_data = json.load(f)
-        else:
-            _cache_data = {}
-    except Exception as exc:
-        logger.warning("Cache load failed: %s", exc)
-        _cache_data = {}
-    _cache_loaded = True
-
-
 def get_cached_leads_for_city(category: str, city: str) -> List[dict]:
-    """Retrieve pre-verified leads for given category and city variation."""
-    _load_cache()
-    cat_lower = category.lower().strip()
-    city_lower = city.lower().strip()
-    city_base = city_lower.split(",")[0].strip()
-
-    keys_to_try = [
-        f"{cat_lower}|{city_lower}",
-        f"{cat_lower}|{city_base}",
-        f"{cat_lower}|{city_lower.replace(' ', '')}",
-    ]
-
-    for k in keys_to_try:
-        if k in _cache_data and len(_cache_data[k]) > 0:
-            return list(_cache_data[k])
-
-    return []
+    """Retrieve pre-verified leads for given category and city via SQLite storage layer."""
+    return get_cached_leads_from_db(category, city, ttl_days=7.0)
 
 
 def save_to_cache(category: str, city: str, new_leads: List[dict]) -> None:
-    """Persist newly found verified leads to cache, deduplicated by root domain and phone."""
-    global _cache_data
-    _load_cache()
-    key = f"{category.lower().strip()}|{city.lower().strip()}"
-    existing = _cache_data.get(key, [])
-    seen = {
-        l.get("phone_e164") or extract_root_domain(l.get("website", "")) or l.get("name")
-        for l in existing
-        if l.get("phone_e164") or l.get("website") or l.get("name")
-    }
-
-    merged = list(existing)
-    for l in new_leads:
-        ident = l.get("phone_e164") or extract_root_domain(l.get("website", "")) or l.get("name")
-        if ident and ident not in seen:
-            seen.add(ident)
-            merged.append(l)
-
-    _cache_data[key] = merged
-    try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(_cache_data, f, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        logger.warning("Cache write failed: %s", exc)
+    """Persist newly found verified leads directly to SQLite store."""
+    save_leads_batch(new_leads)
 
 
 def filter_by_rating(leads: List[dict], star: int, mode: str, limit: int) -> List[dict]:
@@ -1184,6 +1126,7 @@ out center 100 tags;
                                             "has_google_ads": False,
                                             "cms_platform": "Custom",
                                             "whatsapp_url": wa_url,
+                                            "is_whatsapp_ready": wa or bool(wa_url),
                                             "linkedin_url": "",
                                             "lead_score": score,
                                             "email_mx_verified": mx_ver,
@@ -1363,6 +1306,7 @@ async def crawl_business_website(
             "has_google_ads": False,
             "cms_platform": "",
             "whatsapp_url": wa_url,
+            "is_whatsapp_ready": is_wa_ready or bool(wa_url),
             "linkedin_url": "",
             "lead_score": score,
             "email_mx_verified": mx_verified,
@@ -1651,6 +1595,7 @@ async def crawl_business_website(
         "has_google_ads": has_google_ads,
         "cms_platform": cms_platform,
         "whatsapp_url": whatsapp_url,
+        "is_whatsapp_ready": is_wa_ready or bool(whatsapp_url),
         "linkedin_url": linkedin_url,
         "lead_score": lead_score,
         "email_mx_verified": email_mx_verified,
@@ -1675,8 +1620,16 @@ def ensure_lead_intelligence(lead: dict, country_iso: str, country_name: str, ci
         if phone_e164:
             _, _, is_wa, _ = validate_and_format_phone(phone_e164, country_iso, target_iso=country_iso)
             lead["whatsapp_url"] = extract_whatsapp_url("", phone_e164, is_whatsapp_ready=is_wa)
+            lead["is_whatsapp_ready"] = is_wa
         else:
             lead["whatsapp_url"] = ""
+            lead["is_whatsapp_ready"] = False
+    elif "is_whatsapp_ready" not in lead:
+        if phone_e164:
+            _, _, is_wa, _ = validate_and_format_phone(phone_e164, country_iso, target_iso=country_iso)
+            lead["is_whatsapp_ready"] = is_wa or bool(lead.get("whatsapp_url"))
+        else:
+            lead["is_whatsapp_ready"] = False
     if "linkedin_url" not in lead:
         lead["linkedin_url"] = ""
     if "email_mx_verified" not in lead:
@@ -1761,23 +1714,13 @@ async def extract_leads(
             yield {
                 "type": "status",
                 "stage": "cache",
-                "message": f"Querying local SQLite persistent store & verified cache for {city_name}...",
+                "message": f"Querying local SQLite persistent store for {city_name}...",
                 "scanned": 0,
                 "verified": yielded_count,
             }
 
             sqlite_leads = get_cached_leads_from_db(clean_cat, city_clean, ttl_days=7.0)
-            json_leads = get_cached_leads_for_city(clean_cat, city_clean)
-
-            combined_cached: List[dict] = []
-            cached_phones = set()
-            for l in (sqlite_leads + json_leads):
-                p = l.get("phone_e164")
-                if p and p not in cached_phones:
-                    cached_phones.add(p)
-                    combined_cached.append(l)
-
-            filtered_cached = filter_by_rating(combined_cached, star, mode, total_target - yielded_count)
+            filtered_cached = filter_by_rating(sqlite_leads, star, mode, total_target - yielded_count)
 
             cached_loaded_this_city = 0
             for raw_lead in filtered_cached:
@@ -1785,28 +1728,70 @@ async def extract_leads(
                     break
 
                 phone_e164 = raw_lead.get("phone_e164")
-                root_dom = extract_root_domain(raw_lead.get("website", ""))
+                website = raw_lead.get("website", "")
+                lead_name = raw_lead.get("name") or raw_lead.get("business_name", "")
+                root_dom = extract_root_domain(website)
+
+                # 1. TLD-Agnostic Directory / Aggregator / Junk check on cached leads (Fix 2)
+                if website and is_directory_or_junk(website, lead_name):
+                    continue
+
+                # 2. Sovereign ccTLD Check on Cached Leads
+                if website and is_cctld_mismatched(website, country_iso):
+                    continue
+
+                # 3. Clean Title-Trimming Sanitizer (Fix 2)
+                lead_name = sanitize_brand_title(lead_name)
+                raw_lead["name"] = lead_name
+                raw_lead["business_name"] = lead_name
+
+                # 4. Strict Target-Country Phone Alignment & Phone-Type WhatsApp Classifier (Fix 2 & 3)
+                if phone_e164:
+                    e164, disp, is_wa, v_reg = validate_and_format_phone(phone_e164, country_iso, target_iso=country_iso)
+                    if not e164:
+                        continue
+                    raw_lead["phone_e164"] = e164
+                    raw_lead["phone"] = disp
+                    raw_lead["country_code"] = (v_reg or country_iso).upper()
+                    raw_lead["is_whatsapp_ready"] = is_wa
+
+                    # Check if existing wa link was explicit in HTML
+                    cur_wa = raw_lead.get("whatsapp_url", "")
+                    clean_digits = re.sub(r"\D", "", phone_e164)
+                    is_explicit = bool(cur_wa and ("wa.me" in cur_wa or "whatsapp.com" in cur_wa) and not cur_wa.endswith(clean_digits))
+                    if is_explicit:
+                        raw_lead["is_whatsapp_ready"] = True
+                    else:
+                        raw_lead["whatsapp_url"] = extract_whatsapp_url("", phone_e164, is_whatsapp_ready=is_wa)
+                else:
+                    raw_lead["is_whatsapp_ready"] = False
+                    raw_lead["whatsapp_url"] = ""
+
+                # 5. Intra-Country Locality Verification
+                is_val, local_conf = verify_local_geo_alignment(
+                    crawled_text="",
+                    url=website,
+                    title=lead_name,
+                    extracted_address=raw_lead.get("address", ""),
+                    snippet="",
+                    city=city_name,
+                    country_iso=country_iso,
+                    loc_profile=loc_profile,
+                )
+                if not is_val:
+                    continue
+
+                # 6. Deduplication
                 if phone_e164 and phone_e164 in seen_phones:
                     continue
                 if root_dom and domain_crawl_counts[root_dom] >= 5:
                     continue
 
-                norm_name = re.sub(r"\W+", "", raw_lead.get("name", "").lower())
+                norm_name = re.sub(r"\W+", "", lead_name.lower())
                 norm_addr = re.sub(r"\W+", "", raw_lead.get("address", "").lower())
                 identity_key = (norm_name, norm_addr)
                 if norm_name and norm_addr and identity_key in seen_identities:
                     continue
-
-                # Sovereign ccTLD Check on Cached Leads
-                if is_cctld_mismatched(raw_lead.get("website", ""), country_iso):
-                    continue
-
-                # Strict Target-Country Phone Alignment if phone is present
-                if phone_e164:
-                    e164, disp, _, v_reg = validate_and_format_phone(phone_e164, country_iso, target_iso=country_iso)
-                    if not e164:
-                        continue
-                    raw_lead["country_code"] = (v_reg or country_iso).upper()
 
                 raw_lead = ensure_lead_intelligence(raw_lead, country_iso, country_name, city_name)
 
@@ -2090,13 +2075,12 @@ async def extract_leads(
                     w.cancel()
                 await asyncio.gather(producer_supervisor, *worker_tasks, return_exceptions=True)
 
-            # Persist newly verified leads to cache and SQLite batch
+            # Persist newly verified leads to SQLite store
             if new_leads_for_cache:
                 try:
-                    save_to_cache(clean_cat, city_clean, new_leads_for_cache)
                     save_leads_batch(new_leads_for_cache)
                 except Exception as exc:
-                    logger.debug("Cache auto-save error: %s", exc)
+                    logger.debug("SQLite batch save error: %s", exc)
 
     yield {
         "type": "status",

@@ -308,20 +308,25 @@ def validate_and_format_phone(
                     )
                     num_type = phonenumbers.number_type(parsed)
                     # Strict Phone Type Classification for WhatsApp (Fix 3):
-                    # Only MOBILE or FIXED_LINE_OR_MOBILE.
-                    # Explicitly excludes TOLL_FREE, FIXED_LINE, VOIP, SHARED_COST, PREMIUM_RATE, UAN.
-                    whatsapp = num_type in (
-                        PhoneNumberType.MOBILE,
-                        PhoneNumberType.FIXED_LINE_OR_MOBILE,
-                    ) and num_type not in (
-                        PhoneNumberType.TOLL_FREE,
+                    # For countries that distinguish mobile vs. fixed-line numbering plans,
+                    # only mark is_whatsapp_ready = True when number_type == MOBILE.
+                    # Never allow FIXED_LINE or TOLL_FREE numbers.
+                    if num_type in (
                         PhoneNumberType.FIXED_LINE,
+                        PhoneNumberType.TOLL_FREE,
                         PhoneNumberType.VOIP,
                         PhoneNumberType.SHARED_COST,
                         PhoneNumberType.PREMIUM_RATE,
                         PhoneNumberType.UAN,
                         PhoneNumberType.PAGER,
-                    )
+                    ):
+                        whatsapp = False
+                    elif parsed.country_code == 1:
+                        # NANP (+1 US/CA) carrier numbering plan cannot distinguish mobile vs fixed line offline
+                        whatsapp = (num_type in (PhoneNumberType.MOBILE, PhoneNumberType.FIXED_LINE_OR_MOBILE))
+                    else:
+                        # Countries distinguishing mobile vs fixed-line numbering plans (GB, FR, IT, DE, IN, AE, etc.)
+                        whatsapp = (num_type == PhoneNumberType.MOBILE)
                     verified_region = phonenumbers.region_code_for_number(parsed) or target_country
                     return e164, display, whatsapp, verified_region
             except (NumberParseException, Exception):

@@ -4,8 +4,8 @@ Multi-tenant, E.164 phone, Instagram, and global address fields.
 """
 
 from __future__ import annotations
-from typing import Optional, List
-from pydantic import BaseModel, Field
+from typing import Optional, List, Any
+from pydantic import BaseModel, Field, model_validator
 import uuid
 from datetime import datetime, timezone
 
@@ -56,6 +56,16 @@ class LeadRecord(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def populate_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "name" in data and not data.get("business_name"):
+                data["business_name"] = data["name"]
+            elif "business_name" in data and not data.get("name"):
+                data["name"] = data["business_name"]
+        return data
+
     # Legacy compatibility — app.js reads these fields
     @property
     def name(self) -> str:
@@ -65,6 +75,7 @@ class LeadRecord(BaseModel):
         """Return dict compatible with the app.js SSE consumer and export endpoints."""
         return {
             "name":              self.business_name,
+            "business_name":     self.business_name,
             "address":           self.address,
             "phone":             self.phone_e164 or self.phone,
             "phone_e164":        self.phone_e164,
