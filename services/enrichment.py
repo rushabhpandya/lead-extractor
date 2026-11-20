@@ -307,10 +307,20 @@ def validate_and_format_phone(
                         parsed, phonenumbers.PhoneNumberFormat.INTERNATIONAL
                     )
                     num_type = phonenumbers.number_type(parsed)
+                    # Strict Phone Type Classification for WhatsApp (Fix 3):
+                    # Only MOBILE or FIXED_LINE_OR_MOBILE.
+                    # Explicitly excludes TOLL_FREE, FIXED_LINE, VOIP, SHARED_COST, PREMIUM_RATE, UAN.
                     whatsapp = num_type in (
                         PhoneNumberType.MOBILE,
                         PhoneNumberType.FIXED_LINE_OR_MOBILE,
+                    ) and num_type not in (
+                        PhoneNumberType.TOLL_FREE,
                         PhoneNumberType.FIXED_LINE,
+                        PhoneNumberType.VOIP,
+                        PhoneNumberType.SHARED_COST,
+                        PhoneNumberType.PREMIUM_RATE,
+                        PhoneNumberType.UAN,
+                        PhoneNumberType.PAGER,
                     )
                     verified_region = phonenumbers.region_code_for_number(parsed) or target_country
                     return e164, display, whatsapp, verified_region
@@ -587,10 +597,11 @@ def detect_cms_platform(html: str) -> str:
 def extract_whatsapp_url(
     html: str,
     phone_e164: Optional[str] = None,
-    is_whatsapp_ready: bool = True,
+    is_whatsapp_ready: bool = False,
 ) -> str:
     """
-    Extract direct WhatsApp link from HTML or construct wa.me URL from E.164 phone.
+    Extract direct WhatsApp link from HTML or construct wa.me URL ONLY from verified mobile phone.
+    Excludes toll-free and fixed-line numbers.
     """
     if html:
         m = _WHATSAPP_LINK_RE.search(html)

@@ -111,8 +111,36 @@ def extract_root_domain(url: str) -> str:
     return ".".join(parts[-2:])
 
 
+def extract_domain_label(url_or_domain: str) -> str:
+    """
+    Extract the registrable domain label (SLD), stripping subdomains, www, and all TLD suffixes.
+    Handles single ccTLD/gTLDs (.com, .fr, .it, .ca) and multi-part TLDs (.co.uk, .com.au, .co.in).
+    Examples:
+        'https://www.tripadvisor.co.uk/attractions' -> 'tripadvisor'
+        'yelp.fr' -> 'yelp'
+        'fr.yelp.ca' -> 'yelp'
+        'whichmuseum.com' -> 'whichmuseum'
+    """
+    if not url_or_domain:
+        return ""
+    if "://" in url_or_domain:
+        netloc = urlparse(url_or_domain).netloc.lower()
+    else:
+        netloc = url_or_domain.lower()
+    netloc = netloc.split(":")[0]  # strip port if present
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    parts = netloc.split(".")
+    if len(parts) <= 1:
+        return parts[0] if parts else ""
+    last_two = ".".join(parts[-2:])
+    if last_two in TWO_PART_TLDS and len(parts) >= 3:
+        return parts[-3]
+    return parts[-2]
+
+
 # ---------------------------------------------------------------------------
-# Directories, Aggregators, and Non-Business Path Rejection
+# Directories, Aggregators, and Non-Business Path Rejection (TLD-Agnostic)
 # ---------------------------------------------------------------------------
 
 DIRECTORY_DOMAINS: Set[str] = {
@@ -129,20 +157,45 @@ DIRECTORY_DOMAINS: Set[str] = {
     "duckduckgo.com", "zhihu.com", "medium.com", "forbes.com", "nytimes.com",
     "theguardian.com", "bbc.com", "cnn.com", "standard.co.uk", "timeout.com",
     "explorelondon.co.uk", "sothebysrealty.co.uk", "antiques-atlas.com",
-    "mountstreetneighbourhood.com", "mayfair-london.co.uk", "taskrabbit.com",
+    "sellingantiques.co.uk", "mountstreetneighbourhood.com", "mayfair-london.co.uk", "taskrabbit.com",
     "checkatrade.com", "mybuilder.com", "trustatrader.com", "gumtree.com",
     "craigslist.org", "porch.com", "nextdoor.com", "buildzoom.com",
     "wanderlog.com", "culturetrip.com", "theculturetrip.com", "lonelyplanet.com",
     "foursquare.com", "trustpilot.com", "glassdoor.com", "indeed.com",
     "swimcloud.com", "texaslonghorns.com", "worldaquatics.com", "olympics.com",
+    "whichmuseum.com", "fleamarketinsiders.com",
 }
 
+DIRECTORY_LABELS: Set[str] = {
+    "yelp", "angi", "thumbtack", "houzz", "homeadvisor", "yellowpages",
+    "superpages", "bbb", "tripadvisor", "wikipedia", "wikimedia", "wikidata",
+    "wikimapia", "britannica", "facebook", "instagram", "linkedin", "pinterest",
+    "twitter", "x", "tiktok", "youtube", "reddit", "quora", "mapquest",
+    "crunchbase", "zoominfo", "dnb", "bloomberg", "amazon", "ebay",
+    "justdial", "sulekha", "nobroker", "urbancompany", "indiamart", "tradeindia",
+    "apple", "google", "microsoft", "yahoo", "bing", "duckduckgo",
+    "zhihu", "medium", "forbes", "nytimes", "theguardian", "bbc", "cnn",
+    "standard", "timeout", "explorelondon", "sothebysrealty", "antiques-atlas",
+    "sellingantiques", "mountstreetneighbourhood", "mayfair-london", "taskrabbit",
+    "checkatrade", "mybuilder", "trustatrader", "gumtree", "craigslist",
+    "porch", "nextdoor", "buildzoom", "wanderlog", "culturetrip", "theculturetrip",
+    "lonelyplanet", "foursquare", "trustpilot", "glassdoor", "indeed",
+    "swimcloud", "texaslonghorns", "worldaquatics", "olympics",
+    "whichmuseum", "fleamarketinsiders", "vogue", "architecturaldigest",
+    "elledecor", "cntraveler", "afar", "travelandleisure", "secretlondon",
+}
+
+DIRECTORY_KEYWORD_SUBSTRINGS: Tuple[str, ...] = (
+    "tripadvisor", "yellowpages", "whichmuseum", "culturetrip", "timeout",
+    "lonelyplanet", "wanderlog", "checkatrade", "trustpilot", "yelp",
+)
+
 NON_BUSINESS_PATH_PATTERNS = re.compile(
-    r'(?i)/(?:blog|blogs|news|article|articles|story|stories|history|wiki|directory|directories|list|lists|list-of|top-\d+|best-\d+|category|categories|tag|tags)(?:/|$)'
+    r'(?i)/(?:blog|blogs|news|article|articles|story|stories|history|wiki|directory|directories|list|lists|list-of|top-\d+|best-\d+|category|categories|tag|tags|best-of|guide|guides|places-to-visit|attractions|things-to-do)(?:/|$|\.html?)'
 )
 
 EDITORIAL_TITLE_PREFIXES = re.compile(
-    r'(?i)^(?:directory\s+of|list\s+of|the\s+history\s+of|history\s+of|how\s+to|top\s*\d+|best\s+\d+|best\s+of|reviews\s+of)\b'
+    r'(?i)(?:^(?:directory\s+of|list\s+of|the\s+history\s+of|history\s+of|how\s+to|top\s*\d+|best\s+\d+|best\s+of|reviews\s+of|the\s+\d+\s+best|\d+\s+best|\d+\s+top|\d+\s+places|\d+\s+things)\b|\b(?:b2b\s+marketplace|business\s+directory|yellow\s+pages|top\s*\d+\s+best|ranking)\b)'
 )
 
 # ---------------------------------------------------------------------------
@@ -365,6 +418,19 @@ def brand_from_root_domain(root_domain: str) -> str:
     return " ".join(clean_tokens)
 
 
+def sanitize_brand_title(name: str) -> str:
+    """
+    Clean Title Sanitization (Fix 4):
+    Strip leading/trailing punctuation delimiters (-, –, —, |, :, /, ·, •, ,, ;, ., ', ", whitespace)
+    and collapse repeated whitespace.
+    """
+    if not name:
+        return ""
+    cleaned = re.sub(r"^[\s\-\–\—\|:\/·•,;.'\"]+|[\s\-\–\—\|:\/·•,;.'\"]+$", "", name)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def resolve_brand_name(
     og_site_name: Optional[str],
     json_ld_name: Optional[str],
@@ -379,6 +445,7 @@ def resolve_brand_name(
     Rejects generic navigation titles (contact, about, home, etc.) across languages.
     Never outputs a bare city, state, or country name.
     Falls back to og:site_name, JSON-LD name, or clean root domain brand.
+    Enforces clean punctuation delimiter trimming (Fix 4).
     """
     city_lower = (city or "").lower().strip()
     state_lower = (state or "").lower().strip()
@@ -393,7 +460,7 @@ def resolve_brand_name(
     def is_valid_brand(cand: Optional[str]) -> bool:
         if not cand:
             return False
-        c = cand.strip()
+        c = sanitize_brand_title(cand)
         if len(c) < 3 or len(c) > 60:
             return False
         c_low = c.lower()
@@ -407,25 +474,26 @@ def resolve_brand_name(
 
     # 1. Prefer og:site_name from homepage if valid
     if is_valid_brand(og_site_name):
-        return og_site_name.strip()
+        return sanitize_brand_title(og_site_name)
 
     # 2. Prefer JSON-LD name from homepage if valid
     if is_valid_brand(json_ld_name):
-        return json_ld_name.strip()
+        return sanitize_brand_title(json_ld_name)
 
     # 3. Domain slug token overlap scoring against homepage <title>
     domain_slug = root_domain.split(".")[0].lower() if root_domain else ""
     slug_tokens = set(re.findall(r"[a-z0-9]+", domain_slug))
 
     delims = r"[|·•\-\–\—\:]"
-    chunks = [c.strip() for c in re.split(delims, raw_title or "") if len(c.strip()) >= 3]
+    chunks = [sanitize_brand_title(c) for c in re.split(delims, raw_title or "") if len(sanitize_brand_title(c)) >= 3]
 
     scored = []
     for cand in chunks:
         if not is_valid_brand(cand):
             continue
 
-        cand_lower = cand.lower().strip()
+        cand_clean = sanitize_brand_title(cand)
+        cand_lower = cand_clean.lower().strip()
         cand_tokens = set(re.findall(r"[a-z0-9]+", cand_lower))
         overlap = len(cand_tokens.intersection(slug_tokens))
 
@@ -437,20 +505,20 @@ def resolve_brand_name(
 
         loc_penalty = -5 if (cand_lower == city_lower or cand_lower == state_lower or cand_lower == country_lower) else 0
         score = overlap * 2 + sub_score + loc_penalty
-        scored.append((score, len(cand), cand))
+        scored.append((score, len(cand_clean), cand_clean))
 
     if scored:
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
         best = scored[0][2]
         if is_valid_brand(best):
-            return best
+            return sanitize_brand_title(best)
 
     # 4. Fall back to clean title-cased brand name derived from root domain
     fallback = brand_from_root_domain(root_domain)
     if is_valid_brand(fallback):
-        return fallback
+        return sanitize_brand_title(fallback)
 
-    return f"{city.title()} Studio" if city else "Local Business"
+    return sanitize_brand_title(f"{city.title()} Studio" if city else "Local Business")
 
 
 def check_category_relevance(
@@ -520,6 +588,143 @@ def check_category_relevance(
                 return True
 
     return False
+
+
+# ---------------------------------------------------------------------------
+# Intra-Country Locality & Municipality Verification (Fix 1)
+# ---------------------------------------------------------------------------
+
+MAJOR_CITIES_BY_COUNTRY: Dict[str, Set[str]] = {
+    "US": {
+        "new york", "los angeles", "chicago", "houston", "phoenix", "philadelphia",
+        "san antonio", "san diego", "dallas", "austin", "san jose", "fort worth",
+        "jacksonville", "columbus", "charlotte", "indianapolis", "san francisco",
+        "seattle", "denver", "nashville", "oklahoma city", "el paso", "boston",
+        "portland", "las vegas", "detroit", "memphis", "louisville", "baltimore",
+        "milwaukee", "albuquerque", "tucson", "fresno", "sacramento", "kansas city",
+        "mesa", "atlanta", "omaha", "colorado springs", "raleigh", "virginia beach",
+        "long beach", "miami", "oakland", "minneapolis", "tulsa", "tampa",
+        "arlington", "new orleans", "wichita", "cleveland", "bakersfield",
+        "palm beach", "orlando", "boca raton", "naples", "fort lauderdale",
+    },
+    "GB": {
+        "london", "manchester", "birmingham", "edinburgh", "glasgow", "liverpool",
+        "bristol", "leeds", "sheffield", "newcastle", "nottingham", "belfast",
+        "cardiff", "southampton", "oxford", "cambridge", "bath", "brighton",
+    },
+    "FR": {
+        "paris", "marseille", "lyon", "toulouse", "nice", "nantes", "strasbourg",
+        "montpellier", "bordeaux", "lille", "rennes", "reims", "saint-etienne",
+        "toulon", "le havre", "grenoble", "dijon", "angers", "cannes", "monaco",
+    },
+    "IT": {
+        "rome", "milan", "naples", "turin", "palermo", "genoa", "bologna",
+        "florence", "bari", "catania", "venice", "verona", "messina", "padua",
+    },
+    "DE": {
+        "berlin", "hamburg", "munich", "cologne", "frankfurt", "stuttgart",
+        "dusseldorf", "leipzig", "dortmund", "essen", "bremen", "dresden",
+    },
+    "CA": {
+        "toronto", "montreal", "vancouver", "calgary", "edmonton", "ottawa",
+        "winnipeg", "quebec city", "hamilton", "kitchener", "victoria", "halifax",
+    },
+    "AU": {
+        "sydney", "melbourne", "brisbane", "perth", "adelaide", "gold coast",
+        "canberra", "newcastle", "wollongong", "hobart", "geelong",
+    },
+    "IN": {
+        "mumbai", "delhi", "bangalore", "bengaluru", "hyderabad", "chennai",
+        "kolkata", "pune", "ahmedabad", "jaipur", "surat", "lucknow", "kanpur",
+        "nagpur", "indore", "thane", "bhopal", "visakhapatnam", "vadodara",
+    },
+}
+
+
+def verify_local_geo_alignment(
+    crawled_text: str,
+    url: str,
+    title: str,
+    extracted_address: str,
+    snippet: str,
+    city: str,
+    country_iso: str,
+    loc_profile: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, bool]:
+    """
+    Intra-Country Locality Verification (Fix 1):
+    Prevents cross-city false positives within the same country (e.g. Dallas businesses appearing in Miami).
+
+    Returns:
+        (is_valid, local_presence_confirmed)
+        - is_valid: True if candidate does NOT contradict the requested location. False if it explicitly belongs
+                    to a conflicting municipality within the same country.
+        - local_presence_confirmed: True if the queried city, its known districts, postal codes, or area codes
+                    were positively identified in the page content, title, snippet, or address.
+    """
+    target_city = (city or "").strip().lower()
+    country_key = (country_iso or "").strip().upper()
+    if country_key == "UK":
+        country_key = "GB"
+
+    if not target_city:
+        return True, False
+
+    # Check if query was national or state-wide (e.g. "Texas", "France", "United States")
+    if loc_profile:
+        p_country = (loc_profile.get("country_name") or "").lower().strip()
+        p_state = (loc_profile.get("state") or "").lower().strip()
+        if target_city in (p_country, p_state) or (p_state and target_city == p_state.lower()):
+            return True, False
+
+    # Assemble local positive markers
+    markers: Set[str] = {target_city}
+    if loc_profile:
+        for d in loc_profile.get("districts", []):
+            if d and len(d.strip()) >= 3:
+                markers.add(d.strip().lower())
+        for pc in loc_profile.get("postal_codes", []):
+            if pc and len(pc.strip()) >= 3:
+                markers.add(pc.strip().lower())
+        for ac in loc_profile.get("area_codes", []):
+            if ac and len(ac.strip()) >= 2:
+                markers.add(ac.strip().lower())
+
+    # Search blob for local presence confirmation
+    search_blob = f"{url} {title} {extracted_address} {snippet} {crawled_text[:15000]}".lower()
+
+    local_confirmed = False
+    for m in markers:
+        if m.isdigit():
+            # Match numeric postal or area codes with boundary / delimiters
+            if re.search(rf"(?:^|\D){re.escape(m)}(?:\D|$)", search_blob):
+                local_confirmed = True
+                break
+        else:
+            if m in search_blob:
+                local_confirmed = True
+                break
+
+    # Detect conflicting major cities within the same country
+    major_cities = MAJOR_CITIES_BY_COUNTRY.get(country_key, set())
+    high_priority_blob = f"{title} {extracted_address} {urlparse(url).netloc}".lower()
+
+    for other_city in major_cities:
+        if other_city == target_city or other_city in markers:
+            continue
+        # Only treat as conflict if whole word matches in title or extracted address
+        pattern = rf"\b{re.escape(other_city)}\b"
+        if re.search(pattern, high_priority_blob):
+            if not local_confirmed:
+                # Explicit cross-city conflict without any queried city presence
+                logger.debug(
+                    "Intra-country geo conflict: lead explicitly references '%s' instead of queried city '%s'",
+                    other_city,
+                    target_city,
+                )
+                return False, False
+
+    return True, local_confirmed
 
 
 def generate_query_waves(
@@ -644,23 +849,35 @@ def decode_yahoo_url(url: str) -> str:
 
 
 def is_directory_or_junk(url: str, title: str) -> bool:
-    """Detect whether a search result is an aggregator, directory, blog, or junk page."""
+    """
+    Detect whether a search result is an aggregator, directory, blog, or junk page.
+    TLD-Agnostic Directory & Aggregator Blocking (Fix 2).
+    """
+    if not url:
+        return True
+
     parsed = urlparse(url)
     domain = parsed.netloc.lower().replace("www.", "")
     root_domain = extract_root_domain(url)
+    domain_label = extract_domain_label(url)
 
+    # 1. TLD-Agnostic label match & directory label set
+    if domain_label in DIRECTORY_LABELS or any(sub in domain_label for sub in DIRECTORY_KEYWORD_SUBSTRINGS):
+        return True
+
+    # 2. Exact domain / root domain match
     if root_domain in DIRECTORY_DOMAINS or any(d in domain for d in DIRECTORY_DOMAINS):
         return True
 
-    # Path pattern check
+    # 3. Path pattern check (listicles, directories, blog articles)
     if NON_BUSINESS_PATH_PATTERNS.search(parsed.path):
         return True
 
-    # Title prefix check
+    # 4. Title prefix & editorial / ranking check
     if EDITORIAL_TITLE_PREFIXES.search(title):
         return True
 
-    # Public sector / municipal / tourism exclusion (Rule 3)
+    # 5. Public sector / municipal / tourism exclusion
     if PUBLIC_SECTOR_JUNK_PATTERNS.search(url) or PUBLIC_SECTOR_JUNK_PATTERNS.search(title):
         return True
 
@@ -932,9 +1149,9 @@ out center 100 tags;
                                 address = ", ".join(addr_parts) if addr_parts else f"{city}, {country_name}"
 
                                 if phone_raw:
-                                    e164, disp, _, v_reg = validate_and_format_phone(phone_raw, country_iso, target_iso=country_iso)
+                                    e164, disp, wa, v_reg = validate_and_format_phone(phone_raw, country_iso, target_iso=country_iso)
                                     if e164:
-                                        wa_url = extract_whatsapp_url("", e164, is_whatsapp_ready=True)
+                                        wa_url = extract_whatsapp_url("", e164, is_whatsapp_ready=wa)
                                         em_clean = email.lower().strip() if email else ""
                                         mx_ver = await verify_email_mx(em_clean) if em_clean else False
                                         score = calculate_lead_score(
@@ -1002,16 +1219,22 @@ async def crawl_business_website(
     state: str,
     country_iso: str,
     country_name: str,
+    loc_profile: Optional[Dict[str, Any]] = None,
 ) -> Optional[dict]:
     """
     Crawl business website homepage and contact subpage.
     Extracts brand name, callable phone (E.164), real email, real Instagram.
-    Enforces sovereign ccTLD checks and language/script geo consistency.
+    Enforces sovereign ccTLD checks, TLD-agnostic directory blocking, and language/script geo consistency.
+    Enforces intra-country locality verification (Fix 1).
     Implements multi-channel reachability gatekeeper (phone, MX email, or IG).
     """
     url = candidate.get("url", "")
     root_domain = candidate.get("root_domain") or extract_root_domain(url)
     base_domain = urlparse(url).netloc if url else ""
+
+    # TLD-Agnostic Directory / Aggregator / Junk check (Fix 2)
+    if url and is_directory_or_junk(url, candidate.get("title", "")):
+        return None
 
     # Sovereign ccTLD Gatekeeper: Reject foreign sovereign ccTLD pre-crawl
     if url and is_cctld_mismatched(url, country_iso):
@@ -1060,22 +1283,40 @@ async def crawl_business_website(
     if not html:
         snippet = candidate.get("snippet", "")
         pre_phone = candidate.get("phone", "")
-        e164, disp, _, v_reg = validate_and_format_phone(pre_phone, country_iso, target_iso=country_iso)
+        cand_title = candidate.get("title", "")
+        cand_addr = candidate.get("address", "")
+
+        # Intra-country locality verification (Fix 1)
+        is_valid, local_confirmed = verify_local_geo_alignment(
+            crawled_text="",
+            url=url,
+            title=cand_title,
+            extracted_address=cand_addr,
+            snippet=snippet,
+            city=city,
+            country_iso=country_iso,
+            loc_profile=loc_profile,
+        )
+        if not is_valid:
+            return None
+
+        e164, disp, is_wa_ready, v_reg = validate_and_format_phone(pre_phone, country_iso, target_iso=country_iso)
         if not e164 and snippet:
             try:
                 for match in phonenumbers.PhoneNumberMatcher(snippet, country_iso):
                     p_str = phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164)
-                    e164, disp, _, v_reg = validate_and_format_phone(p_str, country_iso, target_iso=country_iso)
+                    e164, disp, is_wa_ready, v_reg = validate_and_format_phone(p_str, country_iso, target_iso=country_iso)
                     if e164:
                         break
             except Exception:
                 pass
 
-        brand_name = candidate.get("name") or resolve_brand_name(None, None, candidate.get("title", ""), root_domain, city, state, country_name)
+        brand_name = candidate.get("name") or resolve_brand_name(None, None, cand_title, root_domain, city, state, country_name)
+        brand_name = sanitize_brand_title(brand_name)
         em_matches = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', snippet)
         valid_ems = [em for em in em_matches if not is_cctld_mismatched(em, country_iso)]
         email, mx_verified, _ = await rank_and_verify_emails(valid_ems)
-        wa_url = extract_whatsapp_url("", e164, is_whatsapp_ready=True) if e164 else ""
+        wa_url = extract_whatsapp_url("", e164, is_whatsapp_ready=is_wa_ready) if e164 else ""
 
         # Multi-Channel Reachability Gatekeeper
         has_phone = bool(e164 and disp)
@@ -1084,13 +1325,21 @@ async def crawl_business_website(
         if not (has_phone or has_mx_email or has_ig):
             return None
 
+        # Address stamping: never stamp {queried_city}, {country} unless local presence verified
+        if cand_addr:
+            address_to_use = cand_addr
+        elif local_confirmed:
+            address_to_use = f"{city}, {country_name}"
+        else:
+            address_to_use = country_name
+
         score = calculate_lead_score(
             has_phone=has_phone,
             has_whatsapp=bool(wa_url),
             email=email,
             email_mx_verified=mx_verified,
             has_instagram=has_ig,
-            address=candidate.get("address") or f"{city}, {country_name}",
+            address=address_to_use,
             city=city,
             country_name=country_name,
             has_meta_pixel=False,
@@ -1098,7 +1347,7 @@ async def crawl_business_website(
         )
         return {
             "name": brand_name,
-            "address": candidate.get("address") or f"{city}, {country_name}",
+            "address": address_to_use,
             "rating": candidate.get("rating"),
             "phone": disp or "",
             "phone_e164": e164 or "",
@@ -1239,13 +1488,15 @@ async def crawl_business_website(
     # 3. Strict Target-Country Phone Verification & Region Alignment
     disp_phone: Optional[str] = None
     phone_e164: Optional[str] = None
+    is_wa_ready: bool = False
     verified_country_iso: Optional[str] = None
 
     for p in raw_phones:
-        e164, disp, _, v_reg = validate_and_format_phone(p, country_iso, target_iso=country_iso)
+        e164, disp, wa, v_reg = validate_and_format_phone(p, country_iso, target_iso=country_iso)
         if e164:
             phone_e164 = e164
             disp_phone = disp
+            is_wa_ready = wa
             verified_country_iso = v_reg
             break
 
@@ -1256,10 +1507,11 @@ async def crawl_business_website(
             try:
                 for match in phonenumbers.PhoneNumberMatcher(snippet, country_iso):
                     raw_p = phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164)
-                    e164, disp, _, v_reg = validate_and_format_phone(raw_p, country_iso, target_iso=country_iso)
+                    e164, disp, wa, v_reg = validate_and_format_phone(raw_p, country_iso, target_iso=country_iso)
                     if e164:
                         phone_e164 = e164
                         disp_phone = disp
+                        is_wa_ready = wa
                         verified_country_iso = v_reg
                         break
             except Exception:
@@ -1318,8 +1570,26 @@ async def crawl_business_website(
             if address and address != city and address != f"{city}, {country_name}":
                 break
 
-    if not address:
-        address = f"{city}, {country_name}"
+    # Intra-country locality verification (Fix 1)
+    is_valid, local_confirmed = verify_local_geo_alignment(
+        crawled_text=combined_text,
+        url=url,
+        title=raw_page_title,
+        extracted_address=address or "",
+        snippet=candidate.get("snippet", ""),
+        city=city,
+        country_iso=country_iso,
+        loc_profile=loc_profile,
+    )
+    if not is_valid:
+        return None
+
+    # Safe address stamping: never stamp {queried_city}, {country} unless local presence verified (Rule 3)
+    if not address or address == city or address == f"{city}, {country_name}":
+        if local_confirmed:
+            address = f"{city}, {country_name}"
+        else:
+            address = country_name
 
     # 8. Rating Extraction
     rating: Optional[float] = candidate.get("rating")
@@ -1346,7 +1616,7 @@ async def crawl_business_website(
     has_meta_pixel = detect_meta_pixel(html)
     has_google_ads = detect_google_ads(html)
     cms_platform = detect_cms_platform(html)
-    whatsapp_url = extract_whatsapp_url(html, phone_e164, is_whatsapp_ready=True) if phone_e164 else ""
+    whatsapp_url = extract_whatsapp_url(html, phone_e164, is_whatsapp_ready=is_wa_ready) if phone_e164 else ""
     linkedin_url = extract_linkedin_url(html)
 
     lead_score = calculate_lead_score(
@@ -1402,7 +1672,11 @@ def ensure_lead_intelligence(lead: dict, country_iso: str, country_name: str, ci
     if "cms_platform" not in lead:
         lead["cms_platform"] = ""
     if "whatsapp_url" not in lead or not lead["whatsapp_url"]:
-        lead["whatsapp_url"] = extract_whatsapp_url("", phone_e164, is_whatsapp_ready=True) if phone_e164 else ""
+        if phone_e164:
+            _, _, is_wa, _ = validate_and_format_phone(phone_e164, country_iso, target_iso=country_iso)
+            lead["whatsapp_url"] = extract_whatsapp_url("", phone_e164, is_whatsapp_ready=is_wa)
+        else:
+            lead["whatsapp_url"] = ""
     if "linkedin_url" not in lead:
         lead["linkedin_url"] = ""
     if "email_mx_verified" not in lead:
@@ -1722,7 +1996,7 @@ async def extract_leads(
                             continue
                         async with sem:
                             lead = await crawl_business_website(
-                                client, cand, clean_cat, city_name, state_name, country_iso, country_name
+                                client, cand, clean_cat, city_name, state_name, country_iso, country_name, loc_profile
                             )
                         if lead:
                             # Apply star rating filter if configured

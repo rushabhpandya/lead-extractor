@@ -17,6 +17,9 @@ logger = logging.getLogger("storage")
 
 DB_PATH = Path(__file__).parent.parent / "leads_store.db"
 
+# Schema version: incremented whenever enrichment signals, geo-filters, or schema change
+SCHEMA_VERSION = 2
+
 
 def normalize_token(text: str) -> str:
     """Normalize text into alphanumeric lowercase for robust index lookup."""
@@ -34,9 +37,37 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
 
 def init_db(db_path: Optional[Path] = None) -> None:
-    """Initialize the SQLite database schema and indexes."""
+    """
+    Initialize SQLite database schema and indexes.
+    Enforces schema versioning: flushes stale cached rows if schema_version is older.
+    """
     try:
         with get_connection(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """
+            )
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM meta WHERE key = 'schema_version';")
+            row = cursor.fetchone()
+            stored_version = int(row[0]) if row and row[0].isdigit() else 0
+
+            if stored_version < SCHEMA_VERSION:
+                logger.info(
+                    "SQLite schema version upgrade (%d -> %d). Flushing stale cached rows...",
+                    stored_version, SCHEMA_VERSION,
+                )
+                conn.execute("DROP TABLE IF EXISTS leads;")
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?);",
+                    (str(SCHEMA_VERSION),),
+                )
+                conn.commit()
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS leads (
@@ -47,6 +78,10 @@ def init_db(db_path: Optional[Path] = None) -> None:
                     scraped_at REAL NOT NULL
                 );
                 """
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?);",
+                (str(SCHEMA_VERSION),),
             )
             conn.execute(
                 """
