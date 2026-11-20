@@ -1,5 +1,5 @@
 /* ============================================================
-   styles.css — AI Based Location Scraper
+   styles.css — Lead Engine
    Clean Enterprise Dashboard (Linear / Stripe / Mercury Aesthetic)
    Obsidian Canvas, Brushed Gold (#D4AF37), Verified Emerald (#10B981)
    ============================================================ */
@@ -92,23 +92,22 @@ input, select { font-family: inherit; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 22px 0 20px;
+  padding: 12px 0;
   border-bottom: 1px solid var(--border-subtle);
-  margin-bottom: 24px;
+  margin-bottom: 16px;
   gap: 16px;
 }
 
 .header-left .logo {
   display: flex;
   align-items: center;
-  gap: 13px;
 }
 
 .logo-icon {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   background: linear-gradient(135deg, #FFF3B0 0%, #D4AF37 55%, #8C6A12 100%);
-  box-shadow: 0 4px 18px var(--gold-glow), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  box-shadow: 0 4px 14px var(--gold-glow), inset 0 1px 0 rgba(255, 255, 255, 0.55);
   border-radius: var(--radius-sm);
   display: grid;
   place-items: center;
@@ -117,37 +116,26 @@ input, select { font-family: inherit; }
 }
 
 .logo-icon svg {
-  width: 20px;
-  height: 20px;
+  width: 17px;
+  height: 17px;
   fill: #07080B;
 }
 
-.logo-title {
-  font-size: 17px;
-  font-weight: 800;
-  letter-spacing: -0.025em;
-  background: linear-gradient(180deg, #FFFFFF 0%, #D4D4D8 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.logo-sub {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-muted);
-  margin-top: 1px;
-  letter-spacing: 0.01em;
+.header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 /* Header Status (Right) */
 .header-right .header-status {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
   background: rgba(15, 18, 25, 0.88);
   border: 1px solid rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(14px);
-  padding: 6px 14px;
+  padding: 5px 12px;
   border-radius: 999px;
   font-family: var(--font-mono);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
@@ -172,15 +160,6 @@ input, select { font-family: inherit; }
   font-weight: 600;
   color: var(--emerald-light);
   letter-spacing: 0.02em;
-}
-
-.header-credits {
-  font-size: 10.5px;
-  font-weight: 500;
-  color: var(--text-muted);
-  border-left: 1px solid rgba(255, 255, 255, 0.12);
-  padding-left: 9px;
-  letter-spacing: 0.04em;
 }
 
 /* ── Full-Width Executive Search Panel ──────────────────────── */

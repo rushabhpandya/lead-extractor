@@ -1,5 +1,5 @@
 /**
- * app.js — AI Based Location Scraper Frontend Logic
+ * app.js — Lead Engine Frontend Logic
  * Outbound Intelligence Edition (v=outbound2026)
  * Vanilla JS: SSE streaming, live telemetry, high-intent filter pills,
  * zero-request marketing signal badges, 1-click WhatsApp, and filtered exports.
